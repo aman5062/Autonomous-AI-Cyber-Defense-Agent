@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS ai_analysis (
     impact TEXT,
     mitigation TEXT,
     code_fix TEXT,
-    references TEXT,
+    refs TEXT,
     FOREIGN KEY (request_id) REFERENCES requests(id)
 );
 
@@ -146,7 +146,7 @@ class LogStorage:
     async def save_analysis(self, request_id: int, attack_type: str, analysis: dict):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                """INSERT INTO ai_analysis (request_id, attack_type, explanation, impact, mitigation, code_fix, references)
+                """INSERT INTO ai_analysis (request_id, attack_type, explanation, impact, mitigation, code_fix, refs)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     request_id,
@@ -201,7 +201,7 @@ class LogStorage:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                """SELECT r.*, a.explanation, a.impact, a.mitigation, a.code_fix, a.references as refs
+                """SELECT r.*, a.explanation, a.impact, a.mitigation, a.code_fix, a.refs
                    FROM requests r
                    LEFT JOIN ai_analysis a ON a.request_id = r.id
                    WHERE r.is_suspicious=1
