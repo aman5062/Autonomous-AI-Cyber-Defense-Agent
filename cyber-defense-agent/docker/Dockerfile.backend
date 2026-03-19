@@ -4,16 +4,18 @@ RUN apt-get update && apt-get install -y \
     iptables \
     sudo \
     curl \
+    gcc \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Allow app user to run iptables without password
 RUN useradd -m -u 1000 appuser && \
     echo "appuser ALL=(ALL) NOPASSWD: /sbin/iptables, /usr/sbin/iptables" >> /etc/sudoers
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir --prefer-binary -r requirements.txt
 
 COPY backend/ ./backend/
 COPY config/ ./config/
