@@ -1,0 +1,37 @@
+version: '3.8'
+
+# Convenience alias so you can run from the project root:
+#   docker-compose up --build
+services:
+  backend:
+    extends:
+      file: docker/docker-compose.yml
+      service: backend
+
+  dashboard:
+    extends:
+      file: docker/docker-compose.yml
+      service: dashboard
+
+  ollama:
+    extends:
+      file: docker/docker-compose.yml
+      service: ollama
+
+  testapp:
+    extends:
+      file: docker/docker-compose.yml
+      service: testapp
+
+  nginx:
+    extends:
+      file: docker/docker-compose.yml
+      service: nginx
+
+volumes:
+  ollama_data:
+  nginx_logs:
+
+networks:
+  cyber_net:
+    driver: bridge
