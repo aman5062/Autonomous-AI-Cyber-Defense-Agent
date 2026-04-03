@@ -9,11 +9,7 @@ RUN pip install --no-cache-dir flask==3.0.0
 COPY test_app/ ./test_app/
 
 # Initialise the test database
-RUN python -c "
-import sys, os
-sys.path.insert(0, '/app')
-os.makedirs('/app/test_app', exist_ok=True)
-"
+RUN python -c "import sys, os; sys.path.insert(0, '/app'); os.makedirs('/app/test_app', exist_ok=True)"
 
 EXPOSE 5000
 
