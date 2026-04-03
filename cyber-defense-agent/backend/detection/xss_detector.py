@@ -1,36 +1,66 @@
+"""
+Cross-Site Scripting (XSS) detector.
+"""
+
 import re
 import logging
-from urllib.parse import unquote_plus
+import urllib.parse
+from typing import Dict
+
 from backend.detection.patterns import XSS_PATTERNS
 
 logger = logging.getLogger(__name__)
 
-_COMPILED = [re.compile(p, re.IGNORECASE) for p in XSS_PATTERNS]
+_COMPILED = [re.compile(p, re.IGNORECASE | re.DOTALL) for p in XSS_PATTERNS]
 
-_CRITICAL = re.compile(r"<script|javascript:|document\.cookie|document\.write", re.IGNORECASE)
+# Patterns that indicate a real script execution attempt (higher severity)
+_EXEC_PATTERNS = [
+    re.compile(r"<script[\s>]", re.IGNORECASE),
+    re.compile(r"javascript\s*:", re.IGNORECASE),
+    re.compile(r"eval\s*\(", re.IGNORECASE),
+    re.compile(r"document\.(cookie|write)", re.IGNORECASE),
+]
 
 
 class XSSDetector:
-    def detect(self, path: str, method: str = "GET") -> dict:
-        decoded = unquote_plus(path)
+    """Detect Cross-Site Scripting (XSS) injection attempts."""
 
-        matched = None
-        for pattern in _COMPILED:
-            if pattern.search(decoded):
-                matched = pattern.pattern
-                break
+    def detect(self, path: str, body: str = "") -> Dict:
+        target = _decode(path) + " " + _decode(body)
 
-        if not matched:
-            return {"detected": False}
+        # Check for execution-level patterns (CRITICAL)
+        for p in _EXEC_PATTERNS:
+            if p.search(target):
+                return {
+                    "detected": True,
+                    "attack_type": "XSS",
+                    "severity": "HIGH",
+                    "pattern": p.pattern,
+                    "confidence": 0.92,
+                    "details": f"XSS execution pattern detected: {path[:200]}",
+                    "recommended_action": "RATE_LIMIT",
+                }
 
-        severity = "HIGH" if _CRITICAL.search(decoded) else "MEDIUM"
+        # Generic XSS indicators
+        for compiled in _COMPILED:
+            if compiled.search(target):
+                return {
+                    "detected": True,
+                    "attack_type": "XSS",
+                    "severity": "MEDIUM",
+                    "pattern": compiled.pattern,
+                    "confidence": 0.75,
+                    "details": f"XSS pattern detected: {path[:200]}",
+                    "recommended_action": "RATE_LIMIT",
+                }
 
-        return {
-            "detected": True,
-            "attack_type": "XSS",
-            "severity": severity,
-            "confidence": 0.88,
-            "pattern": matched,
-            "recommended_action": "BLOCK_IP" if severity == "HIGH" else "RATE_LIMIT",
-            "details": f"XSS pattern detected in path: {path[:100]}",
-        }
+        return {"detected": False, "attack_type": "XSS"}
+
+
+def _decode(text: str) -> str:
+    try:
+        decoded = urllib.parse.unquote_plus(text)
+        decoded = urllib.parse.unquote_plus(decoded)
+        return decoded
+    except Exception:
+        return text

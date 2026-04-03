@@ -1,66 +1,80 @@
+"""
+Scheduled auto-unblock of IPs after their ban duration expires.
+"""
+
 import logging
 from datetime import datetime, timedelta
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+from backend.config import settings
 
 logger = logging.getLogger(__name__)
 
+try:
+    from apscheduler.schedulers.background import BackgroundScheduler
+    _APScheduler_AVAILABLE = True
+except ImportError:
+    _APScheduler_AVAILABLE = False
+    logger.warning("APScheduler not available – auto-unblock disabled")
+
 
 class UnblockScheduler:
-    def __init__(self, defense_engine):
-        self.defense_engine = defense_engine
-        self.scheduler = AsyncIOScheduler()
+    """Schedule automatic IP unblocks after a configurable delay."""
 
-    def start(self):
-        self.scheduler.start()
-        logger.info("Unblock scheduler started.")
+    def __init__(self, ip_blocker, defense_storage):
+        self._blocker = ip_blocker
+        self._storage = defense_storage
+        self._scheduler = None
 
-    def stop(self):
-        self.scheduler.shutdown(wait=False)
+        if _APScheduler_AVAILABLE:
+            self._scheduler = BackgroundScheduler(timezone="UTC")
+            self._scheduler.start()
+            logger.info("UnblockScheduler started")
 
     def schedule_unblock(self, ip: str, duration_seconds: int):
-        if duration_seconds <= 0:
-            logger.info(f"IP {ip} blocked indefinitely (manual review required).")
+        """Schedule *ip* to be unblocked after *duration_seconds*."""
+        unblock_at = datetime.utcnow() + timedelta(seconds=duration_seconds)
+
+        if self._scheduler:
+            self._scheduler.add_job(
+                func=self._do_unblock,
+                trigger="date",
+                run_date=unblock_at,
+                args=[ip],
+                id=f"unblock_{ip}_{int(unblock_at.timestamp())}",
+                replace_existing=True,
+                misfire_grace_time=300,
+            )
+            logger.info("Scheduled unblock of %s at %s", ip, unblock_at.isoformat())
+        else:
+            logger.info(
+                "[NO-SCHEDULER] IP %s should be unblocked at %s",
+                ip, unblock_at.isoformat(),
+            )
+
+    def cancel_unblock(self, ip: str):
+        """Cancel any pending unblock jobs for *ip*."""
+        if not self._scheduler:
             return
+        for job in self._scheduler.get_jobs():
+            if job.id.startswith(f"unblock_{ip}_"):
+                job.remove()
+                logger.info("Cancelled pending unblock for %s", ip)
 
-        run_at = datetime.utcnow() + timedelta(seconds=duration_seconds)
-        job_id = f"unblock_{ip}"
+    def shutdown(self):
+        if self._scheduler and self._scheduler.running:
+            self._scheduler.shutdown(wait=False)
 
-        # Remove existing job for same IP if any
-        if self.scheduler.get_job(job_id):
-            self.scheduler.remove_job(job_id)
-
-        self.scheduler.add_job(
-            func=self._do_unblock,
-            trigger="date",
-            run_date=run_at,
-            args=[ip],
-            id=job_id,
-            misfire_grace_time=300,
-        )
-        logger.info(f"Scheduled unblock for {ip} at {run_at.isoformat()}")
-
-    async def _do_unblock(self, ip: str):
-        logger.info(f"Auto-unblocking IP: {ip}")
-        await self.defense_engine.unblock_ip(ip, performed_by="SCHEDULER")
-
-    async def restore_pending_unblocks(self):
-        """Re-schedule any pending unblocks from DB after restart."""
+    def _do_unblock(self, ip: str):
         try:
-            pending = await self.defense_engine.storage.get_pending_unblocks()
-            now = datetime.utcnow()
-            for entry in pending:
-                unblock_time_str = entry.get("unblock_time")
-                if not unblock_time_str:
-                    continue
-                try:
-                    unblock_time = datetime.fromisoformat(unblock_time_str)
-                    if unblock_time > now:
-                        remaining = int((unblock_time - now).total_seconds())
-                        self.schedule_unblock(entry["ip"], remaining)
-                    else:
-                        # Already expired — unblock now
-                        await self._do_unblock(entry["ip"])
-                except Exception as e:
-                    logger.warning(f"Could not restore unblock for {entry.get('ip')}: {e}")
-        except Exception as e:
-            logger.error(f"restore_pending_unblocks failed: {e}")
+            self._blocker.unblock_ip(ip)
+            self._storage.remove_blocked_ip(ip)
+            self._storage.log_action(
+                action_type="UNBLOCK_IP",
+                target_ip=ip,
+                status="SUCCESS",
+                details="Auto-unblock after ban duration",
+                performed_by="SCHEDULER",
+            )
+            logger.info("Auto-unblocked IP %s", ip)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Auto-unblock failed for %s: %s", ip, exc)

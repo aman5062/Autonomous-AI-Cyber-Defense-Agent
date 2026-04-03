@@ -1,40 +1,62 @@
+"""
+Parse NGINX combined-format access log lines into structured dictionaries.
+"""
+
 import re
 import logging
-from typing import Optional
+from datetime import datetime
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# NGINX combined log format
-LOG_PATTERN = re.compile(
-    r'(?P<ip>[\d\.]+) - (?P<user>\S+) \[(?P<timestamp>[^\]]+)\] '
-    r'"(?P<method>\w+) (?P<path>[^\s"]+) HTTP/[\d\.]+" '
-    r'(?P<status>\d+) (?P<size>\d+|-) '
-    r'"(?P<referrer>[^"]*)" "(?P<user_agent>[^"]*)"'
+# NGINX combined log format pattern
+_LOG_RE = re.compile(
+    r'(?P<ip>[\da-fA-F:.]+)'          # IP (IPv4 or IPv6)
+    r'\s+-\s+-\s+'                    # ident / auth
+    r'\[(?P<timestamp>[^\]]+)\]'      # [timestamp]
+    r'\s+"(?P<method>\w+)'            # "METHOD
+    r'\s+(?P<path>[^\s"]+)'           # /path?query
+    r'\s+HTTP/[\d.]+"'                # HTTP/1.1"
+    r'\s+(?P<status>\d+)'             # status code
+    r'\s+(?P<size>\d+|-)'             # bytes sent
+    r'\s+"(?P<referrer>[^"]*)"'       # "referrer"
+    r'\s+"(?P<user_agent>[^"]*)"'     # "user_agent"
 )
 
 
 class NginxLogParser:
-    """Parses NGINX combined log format into structured dicts."""
+    """Parse NGINX access log lines into structured dicts."""
 
-    def parse(self, log_line: str) -> Optional[dict]:
+    def parse(self, log_line: str) -> Optional[Dict]:
+        """
+        Parse a single NGINX log line.
+
+        Returns a dict on success or None if the line is unparseable.
+        """
+        log_line = log_line.strip()
         if not log_line:
             return None
-
-        match = LOG_PATTERN.match(log_line)
-        if not match:
-            logger.debug(f"Could not parse log line: {log_line[:80]}")
+        m = _LOG_RE.match(log_line)
+        if not m:
+            logger.debug("Unparseable log line: %s", log_line[:120])
             return None
 
-        size_raw = match.group("size")
+        size_raw = m.group("size")
         return {
-            "ip": match.group("ip"),
-            "user": match.group("user"),
-            "timestamp": match.group("timestamp"),
-            "method": match.group("method"),
-            "path": match.group("path"),
-            "status": int(match.group("status")),
+            "ip": m.group("ip"),
+            "timestamp": m.group("timestamp"),
+            "method": m.group("method"),
+            "path": m.group("path"),
+            "status": int(m.group("status")),
             "size": int(size_raw) if size_raw != "-" else 0,
-            "referrer": match.group("referrer"),
-            "user_agent": match.group("user_agent"),
+            "referrer": m.group("referrer"),
+            "user_agent": m.group("user_agent"),
             "raw_log": log_line,
         }
+
+    def parse_timestamp(self, ts: str) -> Optional[datetime]:
+        """Parse NGINX timestamp string into a datetime object."""
+        try:
+            return datetime.strptime(ts, "%d/%b/%Y:%H:%M:%S %z")
+        except ValueError:
+            return None

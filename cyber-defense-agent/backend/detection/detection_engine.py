@@ -1,103 +1,124 @@
+"""
+Attack Detection Engine – orchestrates all detectors and produces unified results.
+"""
+
+import asyncio
 import logging
-import time
-from collections import defaultdict
-from backend.config import settings
+from datetime import datetime
+from typing import Dict, List
+
 from backend.detection.sql_injection import SQLInjectionDetector
 from backend.detection.brute_force import BruteForceDetector
 from backend.detection.path_traversal import PathTraversalDetector
 from backend.detection.xss_detector import XSSDetector
+from backend.detection.command_injection import CommandInjectionDetector
+from backend.detection.bot_detector import BotDetector
 
 logger = logging.getLogger(__name__)
 
-_SEVERITY_RANK = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
+_SEVERITY_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
 
 
 class AttackDetectionEngine:
+    """
+    Run all detectors against a parsed request and return every
+    detection that fired, sorted by severity (highest first).
+    """
+
     def __init__(self):
-        self.sql = SQLInjectionDetector()
-        self.brute_force = BruteForceDetector()
-        self.path_traversal = PathTraversalDetector()
-        self.xss = XSSDetector()
+        self.sql_detector = SQLInjectionDetector()
+        self.brute_force_detector = BruteForceDetector()
+        self.path_traversal_detector = PathTraversalDetector()
+        self.xss_detector = XSSDetector()
+        self.cmd_detector = CommandInjectionDetector()
+        self.bot_detector = BotDetector()
 
-        # DDoS tracking: ip -> [timestamps]
-        self._request_counts: dict = defaultdict(list)
-        self._ddos_threshold = settings.DDOS_THRESHOLD
-        self._ddos_window = settings.DDOS_WINDOW
+    def analyze_request(self, request_data: Dict) -> List[Dict]:
+        """
+        Run all detectors synchronously.
 
-        # Bot user-agent patterns
-        self._bot_agents = [
-            "sqlmap", "nikto", "nmap", "masscan", "zgrab",
-            "python-requests", "go-http-client", "curl/", "wget/",
-            "dirbuster", "dirb", "gobuster", "hydra",
-        ]
+        *request_data* keys expected:
+          ip, path, method, status, user_agent, [body]
 
-    def analyze_request(self, request: dict) -> list:
-        detections = []
-        path = request.get("path", "")
-        method = request.get("method", "GET")
-        ip = request.get("ip", "")
-        status = request.get("status", 200)
-        user_agent = (request.get("user_agent") or "").lower()
+        Returns list of detection dicts (may be empty).
+        """
+        path = request_data.get("path", "")
+        method = request_data.get("method", "GET")
+        ip = request_data.get("ip", "")
+        status = request_data.get("status", 200)
+        user_agent = request_data.get("user_agent", "")
+        body = request_data.get("body", "")
+
+        detections: List[Dict] = []
 
         # SQL Injection
-        r = self.sql.detect(path, method)
-        if r.get("detected"):
-            detections.append(r)
-
-        # Path Traversal
-        r = self.path_traversal.detect(path)
-        if r.get("detected"):
-            detections.append(r)
-
-        # XSS
-        r = self.xss.detect(path, method)
-        if r.get("detected"):
-            detections.append(r)
+        result = self.sql_detector.detect(path, method)
+        if result["detected"]:
+            result["ip"] = ip
+            result["timestamp"] = datetime.utcnow().isoformat()
+            detections.append(result)
 
         # Brute Force
-        r = self.brute_force.detect(ip, path, status)
-        if r.get("detected"):
-            detections.append(r)
+        result = self.brute_force_detector.detect(ip, path, status)
+        if result["detected"]:
+            result["ip"] = ip
+            result["timestamp"] = datetime.utcnow().isoformat()
+            detections.append(result)
 
-        # DDoS detection
-        r = self._detect_ddos(ip)
-        if r.get("detected"):
-            detections.append(r)
+        # Path Traversal
+        result = self.path_traversal_detector.detect(path)
+        if result["detected"]:
+            result["ip"] = ip
+            result["timestamp"] = datetime.utcnow().isoformat()
+            detections.append(result)
 
-        # Bot detection
-        r = self._detect_bot(ip, user_agent)
-        if r.get("detected"):
-            detections.append(r)
+        # XSS
+        result = self.xss_detector.detect(path, body)
+        if result["detected"]:
+            result["ip"] = ip
+            result["timestamp"] = datetime.utcnow().isoformat()
+            detections.append(result)
+
+        # Command Injection
+        result = self.cmd_detector.detect(path)
+        if result["detected"]:
+            result["ip"] = ip
+            result["timestamp"] = datetime.utcnow().isoformat()
+            detections.append(result)
+
+        # Bot / Scanner
+        result = self.bot_detector.detect(user_agent)
+        if result["detected"]:
+            result["ip"] = ip
+            result["timestamp"] = datetime.utcnow().isoformat()
+            detections.append(result)
+
+        # Sort by severity
+        detections.sort(
+            key=lambda d: _SEVERITY_ORDER.get(d.get("severity", "LOW"), 0),
+            reverse=True,
+        )
+
+        if detections:
+            logger.info(
+                "Attack detected: ip=%s type=%s severity=%s",
+                ip,
+                detections[0].get("attack_type"),
+                detections[0].get("severity"),
+            )
 
         return detections
 
-    def _detect_ddos(self, ip: str) -> dict:
-        now = time.time()
-        self._request_counts[ip].append(now)
-        self._request_counts[ip] = [
-            t for t in self._request_counts[ip] if now - t <= self._ddos_window
-        ]
-        count = len(self._request_counts[ip])
-        if count >= self._ddos_threshold:
-            return {
-                "detected": True,
-                "attack_type": "DDOS",
-                "severity": "CRITICAL",
-                "confidence": 0.85,
-                "recommended_action": "RATE_LIMIT",
-                "details": f"{count} requests in {self._ddos_window}s from {ip}",
-            }
-        return {"detected": False}
+    async def analyze_request_async(self, request_data: Dict) -> List[Dict]:
+        """Async wrapper – runs detection in thread pool to avoid blocking."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.analyze_request, request_data)
 
-    def _detect_bot(self, ip: str, user_agent: str) -> dict:
-        for bot in self._bot_agents:
-            if bot in user_agent:
-                return {
-                    "detected": True,
-                    "attack_type": "BOT_SCAN",
-                    "severity": "HIGH",
-                    "confidence": 0.92,
-                    "recommended_action": "BLOCK_IP",
-                    "details": f"Known attack tool detected in User-Agent: {bot}",
-                }
-        return {"detected": False}
+    def highest_severity(self, detections: List[Dict]) -> str:
+        """Return the highest severity level from a list of detections."""
+        if not detections:
+            return "NONE"
+        return max(
+            (d.get("severity", "LOW") for d in detections),
+            key=lambda s: _SEVERITY_ORDER.get(s, 0),
+        )

@@ -4,15 +4,28 @@ app:
   debug: false
   log_level: "INFO"
 
+server:
+  host: "0.0.0.0"
+  port: 8000
+  log_level: "info"
+  cors_origins:
+    - "*"
+
 database:
   url: "sqlite:////app/data/db/cyber_defense.db"
   echo: false
+
+monitoring:
+  nginx_log_path: "/var/log/nginx/access.log"
+  poll_interval: 0.5
+  metrics_interval: 30
 
 nginx:
   log_path: "/var/log/nginx/access.log"
   error_log_path: "/var/log/nginx/error.log"
 
 ollama:
+  api_url: "http://ollama:11434"
   base_url: "http://ollama:11434"
   model: "llama3.2:3b"
   temperature: 0.3
@@ -43,6 +56,7 @@ defense:
 detection:
   brute_force_threshold: 5
   brute_force_window: 60
+  sql_confidence_threshold: 0.7
   ddos_threshold: 100
   ddos_window: 10
 

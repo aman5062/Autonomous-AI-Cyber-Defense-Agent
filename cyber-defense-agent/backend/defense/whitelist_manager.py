@@ -1,44 +1,64 @@
+"""
+Whitelist manager – tracks IPs that should never be blocked.
+"""
+
 import ipaddress
 import logging
 from pathlib import Path
-from backend.config import settings
+from typing import Set
+
+from backend.config import settings, BASE_DIR
 
 logger = logging.getLogger(__name__)
 
+_WHITELIST_FILE = BASE_DIR / "config" / "whitelist.txt"
+
+# Always-safe addresses
+_ALWAYS_SAFE = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
+
 
 class WhitelistManager:
-    def __init__(self):
-        self._static: list = list(settings.WHITELIST)
-        self._networks: list = []
-        self._load_file()
+    """In-memory + file-backed IP whitelist."""
 
-    def _load_file(self):
-        path = Path(settings.WHITELIST_PATH)
-        if not path.exists():
-            return
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                try:
-                    if "/" in line:
-                        self._networks.append(ipaddress.ip_network(line, strict=False))
-                    else:
-                        self._static.append(line)
-                except ValueError:
-                    logger.warning(f"Invalid whitelist entry: {line}")
+    def __init__(self):
+        self._whitelist: Set[str] = set(_ALWAYS_SAFE)
+        self._whitelist.update(settings.defense.whitelist)
+        self._load_from_file()
 
     def is_whitelisted(self, ip: str) -> bool:
-        if ip in self._static:
+        if ip in self._whitelist:
             return True
+        # Only block truly loopback / link-local (NOT general private ranges —
+        # private IPs are valid attacker sources in internal networks)
         try:
             addr = ipaddress.ip_address(ip)
-            return any(addr in net for net in self._networks)
+            return addr.is_loopback or addr.is_link_local
         except ValueError:
             return False
 
-    def add(self, ip: str):
-        if ip not in self._static:
-            self._static.append(ip)
-            logger.info(f"Added {ip} to whitelist.")
+    def add(self, ip: str, reason: str = ""):
+        self._whitelist.add(ip)
+        self._persist()
+        logger.info("Added %s to whitelist: %s", ip, reason)
+
+    def remove(self, ip: str):
+        self._whitelist.discard(ip)
+        self._persist()
+
+    def list_all(self):
+        return sorted(self._whitelist)
+
+    def _load_from_file(self):
+        if _WHITELIST_FILE.exists():
+            for line in _WHITELIST_FILE.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    self._whitelist.add(line)
+
+    def _persist(self):
+        try:
+            _WHITELIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+            lines = ["# Auto-generated whitelist"] + sorted(self._whitelist)
+            _WHITELIST_FILE.write_text("\n".join(lines) + "\n")
+        except OSError as exc:
+            logger.warning("Could not write whitelist file: %s", exc)

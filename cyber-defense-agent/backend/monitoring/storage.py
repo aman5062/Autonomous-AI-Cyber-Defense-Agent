@@ -1,10 +1,21 @@
-import aiosqlite
+"""
+SQLite storage for log entries, attack records, defense actions, and blocked IPs.
+"""
+
 import json
+import sqlite3
 import logging
+from contextlib import contextmanager
 from datetime import datetime
-from typing import List, Optional
+from pathlib import Path
+from typing import Dict, List, Optional
+
+from backend.config import settings
 
 logger = logging.getLogger(__name__)
+
+DB_PATH = Path(settings.database.url.replace("sqlite:///", ""))
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS requests (
@@ -14,7 +25,7 @@ CREATE TABLE IF NOT EXISTS requests (
     method TEXT NOT NULL,
     path TEXT NOT NULL,
     status INTEGER NOT NULL,
-    size INTEGER DEFAULT 0,
+    size INTEGER,
     user_agent TEXT,
     referrer TEXT,
     is_suspicious INTEGER DEFAULT 0,
@@ -22,8 +33,9 @@ CREATE TABLE IF NOT EXISTS requests (
     severity TEXT,
     blocked INTEGER DEFAULT 0,
     raw_log TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
 CREATE INDEX IF NOT EXISTS idx_ip ON requests(ip);
 CREATE INDEX IF NOT EXISTS idx_timestamp ON requests(timestamp);
 CREATE INDEX IF NOT EXISTS idx_attack_type ON requests(attack_type);
@@ -31,7 +43,7 @@ CREATE INDEX IF NOT EXISTS idx_blocked ON requests(blocked);
 
 CREATE TABLE IF NOT EXISTS defense_actions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT DEFAULT (datetime('now')),
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     action_type TEXT NOT NULL,
     target_ip TEXT NOT NULL,
     attack_type TEXT,
@@ -39,33 +51,36 @@ CREATE TABLE IF NOT EXISTS defense_actions (
     duration INTEGER,
     status TEXT,
     details TEXT,
-    performed_by TEXT DEFAULT 'SYSTEM'
+    performed_by TEXT
 );
+
 CREATE INDEX IF NOT EXISTS idx_defense_ip ON defense_actions(target_ip);
+CREATE INDEX IF NOT EXISTS idx_defense_timestamp ON defense_actions(timestamp);
 
 CREATE TABLE IF NOT EXISTS blocked_ips (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ip TEXT UNIQUE NOT NULL,
     attack_type TEXT,
     severity TEXT,
-    block_time TEXT NOT NULL,
-    unblock_time TEXT,
+    block_time DATETIME NOT NULL,
+    unblock_time DATETIME,
     status TEXT DEFAULT 'ACTIVE',
     reason TEXT,
     blocked_by TEXT DEFAULT 'SYSTEM'
 );
+
 CREATE INDEX IF NOT EXISTS idx_blocked_status ON blocked_ips(status);
 
 CREATE TABLE IF NOT EXISTS ai_analysis (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     request_id INTEGER,
     attack_type TEXT,
-    analysis_time TEXT DEFAULT (datetime('now')),
+    analysis_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     explanation TEXT,
     impact TEXT,
     mitigation TEXT,
     code_fix TEXT,
-    refs TEXT,
+    references_list TEXT,
     FOREIGN KEY (request_id) REFERENCES requests(id)
 );
 
@@ -73,245 +88,236 @@ CREATE TABLE IF NOT EXISTS whitelist (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ip TEXT UNIQUE NOT NULL,
     reason TEXT,
-    added_at TEXT DEFAULT (datetime('now')),
+    added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     added_by TEXT DEFAULT 'SYSTEM'
 );
 
-CREATE TABLE IF NOT EXISTS config (
+CREATE TABLE IF NOT EXISTS app_config (
     key TEXT PRIMARY KEY,
     value TEXT,
-    updated_at TEXT DEFAULT (datetime('now'))
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
-INSERT OR IGNORE INTO config (key, value) VALUES
+INSERT OR IGNORE INTO app_config (key, value) VALUES
     ('auto_defense_enabled', 'true'),
     ('dry_run_mode', 'false'),
     ('brute_force_threshold', '5'),
     ('brute_force_window', '60');
-
-CREATE TABLE IF NOT EXISTS vulnerability_scans (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    scan_time TEXT DEFAULT (datetime('now')),
-    target TEXT,
-    open_ports TEXT,
-    vulnerabilities TEXT,
-    raw_output TEXT
-);
 """
 
 
+@contextmanager
+def get_connection():
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def init_db():
+    """Initialize database schema."""
+    with get_connection() as conn:
+        conn.executescript(SCHEMA_SQL)
+    logger.info("Database initialized at %s", DB_PATH)
+
+
 class LogStorage:
-    def __init__(self, db_path: str):
-        self.db_path = db_path
+    """Persist parsed request logs and attack records."""
 
-    async def initialize(self):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.executescript(SCHEMA_SQL)
-            await db.commit()
-        logger.info(f"Database initialized at {self.db_path}")
+    def save_request(self, parsed_log: Dict) -> int:
+        sql = """
+            INSERT INTO requests
+                (timestamp, ip, method, path, status, size,
+                 user_agent, referrer, raw_log)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        with get_connection() as conn:
+            cur = conn.execute(sql, (
+                parsed_log.get("timestamp"),
+                parsed_log.get("ip"),
+                parsed_log.get("method", ""),
+                parsed_log.get("path", ""),
+                parsed_log.get("status", 0),
+                parsed_log.get("size"),
+                parsed_log.get("user_agent"),
+                parsed_log.get("referrer"),
+                parsed_log.get("raw_log"),
+            ))
+            return cur.lastrowid
 
-    async def save_request(self, parsed: dict) -> int:
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                """INSERT INTO requests (timestamp, ip, method, path, status, size, user_agent, referrer, raw_log)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    parsed.get("timestamp", datetime.utcnow().isoformat()),
-                    parsed.get("ip", ""),
-                    parsed.get("method", ""),
-                    parsed.get("path", ""),
-                    parsed.get("status", 0),
-                    parsed.get("size", 0),
-                    parsed.get("user_agent", ""),
-                    parsed.get("referrer", ""),
-                    parsed.get("raw_log", ""),
-                ),
-            )
-            await db.commit()
-            return cursor.lastrowid
+    def mark_attack(self, request_id: int, attack_type: str,
+                    severity: str, blocked: bool = False):
+        sql = """
+            UPDATE requests
+            SET is_suspicious = 1,
+                attack_type = ?,
+                severity = ?,
+                blocked = ?
+            WHERE id = ?
+        """
+        with get_connection() as conn:
+            conn.execute(sql, (attack_type, severity, int(blocked), request_id))
 
-    async def mark_suspicious(self, request_id: int, attack_type: str, severity: str):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "UPDATE requests SET is_suspicious=1, attack_type=?, severity=? WHERE id=?",
-                (attack_type, severity, request_id),
-            )
-            await db.commit()
+    def get_recent_attacks(self, limit: int = 50) -> List[Dict]:
+        sql = """
+            SELECT r.*, a.explanation, a.impact, a.mitigation, a.code_fix, a.references_list
+            FROM requests r
+            LEFT JOIN ai_analysis a ON a.request_id = r.id
+            WHERE r.is_suspicious = 1
+            ORDER BY r.created_at DESC
+            LIMIT ?
+        """
+        with get_connection() as conn:
+            rows = conn.execute(sql, (limit,)).fetchall()
+        return [_row_to_dict(r) for r in rows]
 
-    async def mark_blocked(self, request_id: int):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("UPDATE requests SET blocked=1 WHERE id=?", (request_id,))
-            await db.commit()
+    def get_requests_by_ip(self, ip: str, hours: int = 24) -> List[Dict]:
+        sql = """
+            SELECT * FROM requests
+            WHERE ip = ?
+              AND created_at >= datetime('now', ?)
+            ORDER BY created_at DESC
+        """
+        with get_connection() as conn:
+            rows = conn.execute(sql, (ip, f"-{hours} hours")).fetchall()
+        return [_row_to_dict(r) for r in rows]
 
-    async def save_analysis(self, request_id: int, attack_type: str, analysis: dict):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """INSERT INTO ai_analysis (request_id, attack_type, explanation, impact, mitigation, code_fix, refs)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    request_id,
-                    attack_type,
-                    analysis.get("explanation", ""),
-                    analysis.get("impact", ""),
-                    json.dumps(analysis.get("mitigation", [])),
-                    json.dumps(analysis.get("code_fix", {})),
-                    json.dumps(analysis.get("references", [])),
-                ),
-            )
-            await db.commit()
+    def get_attack_stats(self, days: int = 7) -> Dict:
+        with get_connection() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM requests WHERE is_suspicious=1 "
+                "AND created_at >= datetime('now', ?)", (f"-{days} days",)
+            ).fetchone()[0]
 
-    async def save_defense_action(self, action_type: str, ip: str, attack_type: str,
-                                   severity: str, duration: int, status: str,
-                                   details: str = "", performed_by: str = "SYSTEM"):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """INSERT INTO defense_actions (action_type, target_ip, attack_type, severity, duration, status, details, performed_by)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (action_type, ip, attack_type, severity, duration, status, details, performed_by),
-            )
-            await db.commit()
+            by_type_rows = conn.execute(
+                "SELECT attack_type, COUNT(*) as cnt FROM requests "
+                "WHERE is_suspicious=1 AND created_at >= datetime('now', ?) "
+                "GROUP BY attack_type", (f"-{days} days",)
+            ).fetchall()
 
-    async def add_blocked_ip(self, ip: str, attack_type: str, severity: str,
-                              unblock_time: str, reason: str, blocked_by: str = "SYSTEM"):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """INSERT OR REPLACE INTO blocked_ips (ip, attack_type, severity, block_time, unblock_time, status, reason, blocked_by)
-                   VALUES (?, ?, ?, datetime('now'), ?, 'ACTIVE', ?, ?)""",
-                (ip, attack_type, severity, unblock_time, reason, blocked_by),
-            )
-            await db.commit()
+            by_sev_rows = conn.execute(
+                "SELECT severity, COUNT(*) as cnt FROM requests "
+                "WHERE is_suspicious=1 AND created_at >= datetime('now', ?) "
+                "GROUP BY severity", (f"-{days} days",)
+            ).fetchall()
 
-    async def remove_blocked_ip(self, ip: str):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "UPDATE blocked_ips SET status='UNBLOCKED' WHERE ip=? AND status='ACTIVE'", (ip,)
-            )
-            await db.commit()
+            blocked = conn.execute(
+                "SELECT COUNT(*) FROM requests WHERE is_suspicious=1 AND blocked=1 "
+                "AND created_at >= datetime('now', ?)", (f"-{days} days",)
+            ).fetchone()[0]
 
-    async def get_blocked_ips(self) -> List[dict]:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
-                "SELECT * FROM blocked_ips WHERE status='ACTIVE' ORDER BY block_time DESC"
-            ) as cursor:
-                rows = await cursor.fetchall()
-                return [dict(r) for r in rows]
-
-    async def get_recent_attacks(self, limit: int = 50) -> List[dict]:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
-                """SELECT r.*, a.explanation, a.impact, a.mitigation, a.code_fix, a.refs
-                   FROM requests r
-                   LEFT JOIN ai_analysis a ON a.request_id = r.id
-                   WHERE r.is_suspicious=1
-                   ORDER BY r.created_at DESC LIMIT ?""",
-                (limit,),
-            ) as cursor:
-                rows = await cursor.fetchall()
-                results = []
-                for row in rows:
-                    d = dict(row)
-                    for field in ("mitigation", "code_fix", "refs"):
-                        if d.get(field):
-                            try:
-                                d[field] = json.loads(d[field])
-                            except Exception:
-                                pass
-                    results.append(d)
-                return results
-
-    async def get_attack_stats(self, days: int = 7) -> dict:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
-                """SELECT attack_type, COUNT(*) as count FROM requests
-                   WHERE is_suspicious=1 AND created_at >= datetime('now', ?)
-                   GROUP BY attack_type""",
-                (f"-{days} days",),
-            ) as cursor:
-                by_type = {row["attack_type"]: row["count"] for row in await cursor.fetchall()}
-
-            async with db.execute(
-                """SELECT severity, COUNT(*) as count FROM requests
-                   WHERE is_suspicious=1 AND created_at >= datetime('now', ?)
-                   GROUP BY severity""",
-                (f"-{days} days",),
-            ) as cursor:
-                by_severity = {row["severity"]: row["count"] for row in await cursor.fetchall()}
-
-            async with db.execute(
-                """SELECT date(created_at) as date, COUNT(*) as count FROM requests
-                   WHERE is_suspicious=1 AND created_at >= datetime('now', ?)
-                   GROUP BY date(created_at) ORDER BY date""",
-                (f"-{days} days",),
-            ) as cursor:
-                timeline = [{"date": row["date"], "count": row["count"]} for row in await cursor.fetchall()]
-
-            async with db.execute(
-                "SELECT COUNT(*) as total FROM requests WHERE is_suspicious=1 AND created_at >= datetime('now', ?)",
-                (f"-{days} days",),
-            ) as cursor:
-                total = (await cursor.fetchone())["total"]
-
-            async with db.execute(
-                "SELECT COUNT(*) as blocked FROM requests WHERE blocked=1 AND created_at >= datetime('now', ?)",
-                (f"-{days} days",),
-            ) as cursor:
-                blocked_count = (await cursor.fetchone())["blocked"]
+            timeline_rows = conn.execute(
+                "SELECT date(created_at) as date, COUNT(*) as cnt FROM requests "
+                "WHERE is_suspicious=1 AND created_at >= datetime('now', ?) "
+                "GROUP BY date(created_at) ORDER BY date", (f"-{days} days",)
+            ).fetchall()
 
         return {
             "total_attacks": total,
-            "blocked_count": blocked_count,
-            "by_type": by_type,
-            "by_severity": by_severity,
-            "timeline": timeline,
+            "by_type": {r["attack_type"]: r["cnt"] for r in by_type_rows if r["attack_type"]},
+            "by_severity": {r["severity"]: r["cnt"] for r in by_sev_rows if r["severity"]},
+            "blocked_count": blocked,
+            "timeline": [{"date": r["date"], "count": r["cnt"]} for r in timeline_rows],
         }
 
-    async def get_config(self, key: str) -> Optional[str]:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT value FROM config WHERE key=?", (key,)) as cursor:
-                row = await cursor.fetchone()
-                return row["value"] if row else None
 
-    async def set_config(self, key: str, value: str):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+class DefenseStorage:
+    """Persist defense actions and blocked IP records."""
+
+    def log_action(self, action_type: str, target_ip: str,
+                   attack_type: str = None, severity: str = None,
+                   duration: int = None, status: str = "SUCCESS",
+                   details: str = None, performed_by: str = "SYSTEM"):
+        sql = """
+            INSERT INTO defense_actions
+                (action_type, target_ip, attack_type, severity, duration,
+                 status, details, performed_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        with get_connection() as conn:
+            conn.execute(sql, (
+                action_type, target_ip, attack_type, severity,
+                duration, status, details, performed_by,
+            ))
+
+    def add_blocked_ip(self, ip: str, attack_type: str, severity: str,
+                       unblock_time: datetime, reason: str = None,
+                       blocked_by: str = "SYSTEM"):
+        sql = """
+            INSERT OR REPLACE INTO blocked_ips
+                (ip, attack_type, severity, block_time, unblock_time,
+                 status, reason, blocked_by)
+            VALUES (?, ?, ?, datetime('now'), ?, 'ACTIVE', ?, ?)
+        """
+        with get_connection() as conn:
+            conn.execute(sql, (ip, attack_type, severity,
+                               unblock_time.isoformat() if unblock_time else None,
+                               reason, blocked_by))
+
+    def remove_blocked_ip(self, ip: str):
+        sql = "UPDATE blocked_ips SET status='UNBLOCKED' WHERE ip=?"
+        with get_connection() as conn:
+            conn.execute(sql, (ip,))
+
+    def get_blocked_ips(self) -> List[Dict]:
+        sql = "SELECT * FROM blocked_ips WHERE status='ACTIVE' ORDER BY block_time DESC"
+        with get_connection() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    def is_ip_blocked(self, ip: str) -> bool:
+        sql = "SELECT 1 FROM blocked_ips WHERE ip=? AND status='ACTIVE'"
+        with get_connection() as conn:
+            return conn.execute(sql, (ip,)).fetchone() is not None
+
+    def save_ai_analysis(self, request_id: Optional[int], attack_type: str,
+                         analysis: Dict):
+        sql = """
+            INSERT INTO ai_analysis
+                (request_id, attack_type, explanation, impact, mitigation,
+                 code_fix, references_list)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """
+        with get_connection() as conn:
+            conn.execute(sql, (
+                request_id,
+                attack_type,
+                analysis.get("explanation"),
+                analysis.get("impact"),
+                json.dumps(analysis.get("mitigation", [])),
+                json.dumps(analysis.get("code_fix", {})),
+                json.dumps(analysis.get("references", [])),
+            ))
+
+    def get_config(self, key: str) -> Optional[str]:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_config WHERE key=?", (key,)
+            ).fetchone()
+        return row["value"] if row else None
+
+    def set_config(self, key: str, value: str):
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)",
                 (key, value),
             )
-            await db.commit()
 
-    async def save_scan_result(self, target: str, open_ports: list, vulnerabilities: list, raw: str):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "INSERT INTO vulnerability_scans (target, open_ports, vulnerabilities, raw_output) VALUES (?, ?, ?, ?)",
-                (target, json.dumps(open_ports), json.dumps(vulnerabilities), raw),
-            )
-            await db.commit()
 
-    async def get_latest_scan(self) -> Optional[dict]:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
-                "SELECT * FROM vulnerability_scans ORDER BY scan_time DESC LIMIT 1"
-            ) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    d = dict(row)
-                    for f in ("open_ports", "vulnerabilities"):
-                        try:
-                            d[f] = json.loads(d[f])
-                        except Exception:
-                            pass
-                    return d
-                return None
-
-    async def get_pending_unblocks(self) -> List[dict]:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
-                "SELECT * FROM blocked_ips WHERE status='ACTIVE' AND unblock_time IS NOT NULL"
-            ) as cursor:
-                return [dict(r) for r in await cursor.fetchall()]
+def _row_to_dict(row: sqlite3.Row) -> Dict:
+    d = dict(row)
+    for field in ("mitigation", "code_fix", "references_list"):
+        if d.get(field) and isinstance(d[field], str):
+            try:
+                d[field] = json.loads(d[field])
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return d

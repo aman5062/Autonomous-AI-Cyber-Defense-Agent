@@ -1,147 +1,202 @@
+"""
+Defense Automation Engine – decides and executes defensive actions.
+"""
+
 import logging
 from datetime import datetime, timedelta
+from typing import Dict, List
+
 from backend.config import settings
 from backend.defense.ip_blocker import IPBlocker
-from backend.defense.whitelist_manager import WhitelistManager
 from backend.defense.rate_limiter import RateLimiter
+from backend.defense.whitelist_manager import WhitelistManager
+from backend.defense.unblock_scheduler import UnblockScheduler
+from backend.monitoring.storage import DefenseStorage
 
 logger = logging.getLogger(__name__)
 
+_ACTION_MAP = {
+    "SQL_INJECTION": "BLOCK_IP",
+    "BRUTE_FORCE": "BLOCK_IP",
+    "PATH_TRAVERSAL": "BLOCK_IP",
+    "COMMAND_INJECTION": "BLOCK_IP",
+    "PORT_SCAN": "BLOCK_IP",
+    "XSS": "RATE_LIMIT",
+    "BOT_SCAN": "RATE_LIMIT",
+    "DDOS": "BLOCK_IP",
+    "DEFAULT": "BLOCK_IP",
+}
+
 
 class DefenseEngine:
-    def __init__(self, storage):
-        self.storage = storage
-        self.blocker = IPBlocker()
-        self.whitelist = WhitelistManager()
+    """
+    Execute automated defensive actions in response to detected attacks.
+
+    Safety guarantees:
+    - Whitelisted / private IPs are NEVER blocked.
+    - Dry-run mode logs actions without applying them.
+    - Every action is written to the database.
+    """
+
+    def __init__(self):
+        self.ip_blocker = IPBlocker()
         self.rate_limiter = RateLimiter()
-        self.auto_block = settings.AUTO_BLOCK_ENABLED
-        self.dry_run = settings.DRY_RUN_MODE
-        self.ban_durations = settings.BAN_DURATIONS
-        self._scheduler = None  # injected after init to avoid circular import
+        self.whitelist = WhitelistManager()
+        self._storage = DefenseStorage()
+        self.scheduler = UnblockScheduler(self.ip_blocker, self._storage)
+        self._auto_block = settings.defense.enable_auto_block
+        self._dry_run = settings.defense.dry_run_mode
 
-    def set_scheduler(self, scheduler):
-        self._scheduler = scheduler
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
-    async def execute_defense(self, request: dict, attack_info: dict) -> dict:
-        ip = request.get("ip", "")
-        attack_type = attack_info.get("attack_type", "UNKNOWN")
-        severity = attack_info.get("severity", "LOW")
-        recommended = attack_info.get("recommended_action", "ALERT_ONLY")
+    def execute_defense(self, attack_info: Dict) -> Dict:
+        """
+        Execute the appropriate defense for the given *attack_info* dict.
+
+        Returns a result dict describing what was (or would be) done.
+        """
+        ip = attack_info.get("ip", "")
+        attack_type = attack_info.get("attack_type", "DEFAULT")
+        severity = attack_info.get("severity", "MEDIUM")
+
+        if not ip:
+            return {"success": False, "reason": "No IP address provided"}
 
         if self.whitelist.is_whitelisted(ip):
-            logger.info(f"Skipping defense for whitelisted IP: {ip}")
-            return {"action": "WHITELISTED", "ip": ip}
+            logger.info("Skipping defense – IP %s is whitelisted", ip)
+            return {"success": True, "action": "WHITELISTED", "ip": ip}
 
-        if self.dry_run:
-            logger.info(f"[DRY-RUN] Would {recommended} for {ip} ({attack_type})")
-            return {"action": f"DRY_RUN_{recommended}", "ip": ip}
+        if not self._auto_block and not self._dry_run:
+            logger.info("Auto-block disabled – logging attack only")
+            return {"success": True, "action": "ALERT_ONLY", "ip": ip}
 
-        action_taken = "ALERT_ONLY"
+        action = _ACTION_MAP.get(attack_type, _ACTION_MAP["DEFAULT"])
+        duration = settings.defense.ban_durations.get(
+            attack_type,
+            settings.defense.ban_durations["DEFAULT"],
+        )
+        unblock_at = datetime.utcnow() + timedelta(seconds=duration)
 
-        if recommended == "BLOCK_IP" and self.auto_block:
-            duration = self.ban_durations.get(attack_type, self.ban_durations.get("DEFAULT", 3600))
-            success = self.blocker.block_ip(ip, reason=f"{attack_type} detected")
+        if action == "BLOCK_IP":
+            return self._block_ip(ip, attack_type, severity, duration, unblock_at)
+        elif action == "RATE_LIMIT":
+            return self._rate_limit(ip, attack_type, severity, duration)
+        else:
+            return {"success": True, "action": "ALERT_ONLY", "ip": ip}
 
-            if success:
-                unblock_time = None
-                if duration > 0:
-                    unblock_time = (datetime.utcnow() + timedelta(seconds=duration)).isoformat()
+    def execute_defense_bulk(self, detections: List[Dict]) -> List[Dict]:
+        """Execute defense for each detection (highest severity first)."""
+        seen_ips: set = set()
+        results = []
+        for det in detections:
+            ip = det.get("ip", "")
+            if ip in seen_ips:
+                continue
+            seen_ips.add(ip)
+            results.append(self.execute_defense(det))
+        return results
 
-                await self.storage.add_blocked_ip(
-                    ip=ip,
-                    attack_type=attack_type,
-                    severity=severity,
-                    unblock_time=unblock_time,
-                    reason=f"Auto-blocked: {attack_type}",
-                )
-                await self.storage.save_defense_action(
-                    action_type="BLOCK_IP",
-                    ip=ip,
-                    attack_type=attack_type,
-                    severity=severity,
-                    duration=duration,
-                    status="SUCCESS",
-                    details=attack_info.get("details", ""),
-                )
-                action_taken = "BLOCK_IP"
+    def manual_block(self, ip: str, reason: str = "Manual block",
+                     duration: int = 3600) -> Dict:
+        unblock_at = datetime.utcnow() + timedelta(seconds=duration)
+        return self._block_ip(ip, "MANUAL", "HIGH", duration, unblock_at,
+                              performed_by="MANUAL", reason=reason)
 
-                # Schedule auto-unblock
-                if duration > 0 and self._scheduler:
-                    self._scheduler.schedule_unblock(ip, duration)
-
-        elif recommended == "RATE_LIMIT":
-            self.rate_limiter.check(ip)
-            await self.storage.save_defense_action(
-                action_type="RATE_LIMIT",
-                ip=ip,
-                attack_type=attack_type,
-                severity=severity,
-                duration=0,
-                status="SUCCESS",
-                details=attack_info.get("details", ""),
-            )
-            action_taken = "RATE_LIMIT"
-
-        return {"action": action_taken, "ip": ip, "attack_type": attack_type}
-
-    async def unblock_ip(self, ip: str, performed_by: str = "MANUAL") -> dict:
-        success = self.blocker.unblock_ip(ip)
-        await self.storage.remove_blocked_ip(ip)
-        await self.storage.save_defense_action(
+    def manual_unblock(self, ip: str) -> Dict:
+        success = self.ip_blocker.unblock_ip(ip)
+        self._storage.remove_blocked_ip(ip)
+        self.scheduler.cancel_unblock(ip)
+        self._storage.log_action(
             action_type="UNBLOCK_IP",
-            ip=ip,
-            attack_type="",
-            severity="",
-            duration=0,
+            target_ip=ip,
             status="SUCCESS" if success else "FAILED",
+            details="Manual unblock",
+            performed_by="MANUAL",
+        )
+        return {"success": success, "action": "UNBLOCK_IP", "ip": ip}
+
+    def emergency_unblock_all(self) -> Dict:
+        """Unblock every IP (emergency use only)."""
+        logger.warning("EMERGENCY: unblocking all IPs")
+        self.ip_blocker.flush_all()
+        for row in self._storage.get_blocked_ips():
+            self._storage.remove_blocked_ip(row["ip"])
+        return {"success": True, "action": "EMERGENCY_UNBLOCK_ALL"}
+
+    def set_dry_run(self, enabled: bool):
+        self._dry_run = enabled
+        self.ip_blocker._dry_run = enabled
+        logger.info("Dry-run mode: %s", enabled)
+
+    def set_auto_block(self, enabled: bool):
+        self._auto_block = enabled
+        logger.info("Auto-block: %s", enabled)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _block_ip(self, ip: str, attack_type: str, severity: str,
+                  duration: int, unblock_at: datetime,
+                  performed_by: str = "SYSTEM",
+                  reason: str = None) -> Dict:
+
+        if self._storage.is_ip_blocked(ip):
+            return {"success": True, "action": "ALREADY_BLOCKED", "ip": ip}
+
+        success = self.ip_blocker.block_ip(ip, reason or attack_type)
+        block_reason = reason or f"Automated block – {attack_type}"
+
+        self._storage.add_blocked_ip(
+            ip=ip, attack_type=attack_type, severity=severity,
+            unblock_time=unblock_at, reason=block_reason,
+            blocked_by=performed_by,
+        )
+        self._storage.log_action(
+            action_type="BLOCK_IP",
+            target_ip=ip,
+            attack_type=attack_type,
+            severity=severity,
+            duration=duration,
+            status="SUCCESS" if success else "FAILED",
+            details=block_reason,
             performed_by=performed_by,
         )
-        return {"success": success, "ip": ip}
 
-    async def block_ip_manual(self, ip: str, reason: str, duration: int = 3600) -> dict:
-        if self.whitelist.is_whitelisted(ip):
-            return {"success": False, "message": f"{ip} is whitelisted"}
-
-        success = self.blocker.block_ip(ip, reason=reason)
         if success:
-            unblock_time = None
-            if duration > 0:
-                unblock_time = (datetime.utcnow() + timedelta(seconds=duration)).isoformat()
-            await self.storage.add_blocked_ip(
-                ip=ip,
-                attack_type="MANUAL",
-                severity="MANUAL",
-                unblock_time=unblock_time,
-                reason=reason,
-                blocked_by="MANUAL",
-            )
-            await self.storage.save_defense_action(
-                action_type="BLOCK_IP",
-                ip=ip,
-                attack_type="MANUAL",
-                severity="MANUAL",
-                duration=duration,
-                status="SUCCESS",
-                details=reason,
-                performed_by="MANUAL",
-            )
-        return {"success": success, "ip": ip, "unblock_time": unblock_time if success else None}
+            self.scheduler.schedule_unblock(ip, duration)
 
-    async def emergency_unblock_all(self) -> dict:
-        blocked = await self.storage.get_blocked_ips()
-        count = 0
-        for entry in blocked:
-            ip = entry["ip"]
-            self.blocker.unblock_ip(ip)
-            await self.storage.remove_blocked_ip(ip)
-            count += 1
-        logger.warning(f"EMERGENCY UNBLOCK: Released {count} IPs.")
-        return {"unblocked": count}
+        logger.info(
+            "Defense executed: BLOCK_IP ip=%s attack=%s duration=%ds",
+            ip, attack_type, duration,
+        )
+        return {
+            "success": success,
+            "action": "BLOCK_IP",
+            "ip": ip,
+            "attack_type": attack_type,
+            "duration": duration,
+            "unblock_at": unblock_at.isoformat(),
+            "dry_run": self._dry_run,
+        }
 
-    async def toggle_auto_defense(self, enabled: bool):
-        self.auto_block = enabled
-        await self.storage.set_config("auto_defense_enabled", str(enabled).lower())
-
-    async def toggle_dry_run(self, enabled: bool):
-        self.dry_run = enabled
-        await self.storage.set_config("dry_run_mode", str(enabled).lower())
+    def _rate_limit(self, ip: str, attack_type: str, severity: str,
+                    duration: int) -> Dict:
+        success = self.rate_limiter.apply_rate_limit(ip, duration)
+        self._storage.log_action(
+            action_type="RATE_LIMIT",
+            target_ip=ip,
+            attack_type=attack_type,
+            severity=severity,
+            duration=duration,
+            status="SUCCESS" if success else "FAILED",
+            performed_by="SYSTEM",
+        )
+        return {
+            "success": success,
+            "action": "RATE_LIMIT",
+            "ip": ip,
+            "duration": duration,
+        }

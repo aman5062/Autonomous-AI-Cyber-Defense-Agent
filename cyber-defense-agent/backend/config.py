@@ -1,82 +1,133 @@
+"""
+Configuration management for Autonomous AI Cyber Defense Agent
+"""
+
 import os
 import yaml
 from pathlib import Path
+from dataclasses import dataclass, field
+from typing import List
 
-CONFIG_PATH = Path(os.getenv("CONFIG_PATH", "/app/config/settings.yaml"))
+BASE_DIR = Path(__file__).parent.parent
 
 
-def load_config() -> dict:
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH) as f:
-            return yaml.safe_load(f)
+def _load_yaml_config() -> dict:
+    config_path = BASE_DIR / "config" / "settings.yaml"
+    if config_path.exists():
+        with open(config_path) as f:
+            return yaml.safe_load(f) or {}
     return {}
 
 
-_cfg = load_config()
+_cfg = _load_yaml_config()
 
 
-class Settings:
-    # App
-    APP_NAME: str = _cfg.get("app", {}).get("name", "AI Cyber Defense Agent")
-    DEBUG: bool = _cfg.get("app", {}).get("debug", False)
-    LOG_LEVEL: str = os.getenv("LOG_LEVEL", _cfg.get("app", {}).get("log_level", "INFO"))
+@dataclass
+class DatabaseConfig:
+    url: str = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR}/data/db/cyber_defense.db")
+    echo: bool = False
 
-    # Database
-    DATABASE_URL: str = os.getenv(
-        "DATABASE_URL", _cfg.get("database", {}).get("url", "sqlite:////app/data/db/cyber_defense.db")
-    )
 
-    # NGINX logs
-    NGINX_LOG_PATH: str = _cfg.get("nginx", {}).get("log_path", "/var/log/nginx/access.log")
+@dataclass
+class OllamaConfig:
+    api_url: str = os.getenv("OLLAMA_API_URL", os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
+    model: str = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+    temperature: float = 0.3
+    max_tokens: int = 1000
+    timeout: int = 120
 
-    # Ollama
-    OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", _cfg.get("ollama", {}).get("base_url", "http://ollama:11434"))
-    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", _cfg.get("ollama", {}).get("model", "llama3.2:3b"))
-    OLLAMA_TEMPERATURE: float = _cfg.get("ollama", {}).get("temperature", 0.3)
-    OLLAMA_MAX_TOKENS: int = _cfg.get("ollama", {}).get("max_tokens", 1000)
-    OLLAMA_TIMEOUT: int = _cfg.get("ollama", {}).get("timeout", 120)
 
-    # Qdrant
-    QDRANT_HOST: str = os.getenv("QDRANT_HOST", _cfg.get("qdrant", {}).get("host", "qdrant"))
-    QDRANT_PORT: int = _cfg.get("qdrant", {}).get("port", 6333)
-    QDRANT_COLLECTION: str = _cfg.get("qdrant", {}).get("collection_name", "threat_intelligence")
+@dataclass
+class QdrantConfig:
+    host: str = os.getenv("QDRANT_HOST", "qdrant")
+    port: int = 6333
+    collection_name: str = "threat_intelligence"
 
-    # Defense
-    AUTO_BLOCK_ENABLED: bool = _cfg.get("defense", {}).get("auto_block_enabled", True)
-    DRY_RUN_MODE: bool = os.getenv("DRY_RUN_MODE", "false").lower() == "true"
-    WHITELIST: list = _cfg.get("defense", {}).get("whitelist", ["127.0.0.1", "::1"])
-    BAN_DURATIONS: dict = _cfg.get("defense", {}).get("ban_durations", {
+
+@dataclass
+class DetectionConfig:
+    brute_force_threshold: int = int(os.getenv("BRUTE_FORCE_THRESHOLD", "5"))
+    brute_force_window: int = int(os.getenv("BRUTE_FORCE_WINDOW", "60"))
+    sql_confidence_threshold: float = 0.7
+    ddos_threshold: int = 100
+    ddos_window: int = 10
+    enable_anomaly_detection: bool = False
+
+
+@dataclass
+class DefenseConfig:
+    enable_auto_block: bool = os.getenv("ENABLE_AUTO_BLOCK", "true").lower() == "true"
+    dry_run_mode: bool = os.getenv("DRY_RUN_MODE", "false").lower() == "true"
+    whitelist: List[str] = field(default_factory=lambda: (
+        ["127.0.0.1", "::1", "localhost"] +
+        [ip for ip in os.getenv("WHITELIST_IPS", "").split(",") if ip.strip()]
+    ))
+    ban_durations: dict = field(default_factory=lambda: {
         "SQL_INJECTION": 86400,
         "BRUTE_FORCE": 3600,
         "PATH_TRAVERSAL": 86400,
         "XSS": 21600,
+        "COMMAND_INJECTION": 86400,
+        "PORT_SCAN": 172800,
+        "DDOS": 86400,
         "DEFAULT": 3600,
     })
 
-    # Detection
-    BRUTE_FORCE_THRESHOLD: int = _cfg.get("detection", {}).get("brute_force_threshold", 5)
-    BRUTE_FORCE_WINDOW: int = _cfg.get("detection", {}).get("brute_force_window", 60)
-    DDOS_THRESHOLD: int = _cfg.get("detection", {}).get("ddos_threshold", 100)
-    DDOS_WINDOW: int = _cfg.get("detection", {}).get("ddos_window", 10)
 
-    # Scanning
-    SCAN_TARGET_HOST: str = os.getenv("SCAN_TARGET", _cfg.get("scanning", {}).get("target_host", "testapp"))
-    SCAN_TARGET_PORT: int = _cfg.get("scanning", {}).get("target_port", 5000)
-
-    # NVD
-    NVD_API_URL: str = _cfg.get("nvd", {}).get("api_url", "https://services.nvd.nist.gov/rest/json/cves/2.0")
-    NVD_API_KEY: str = os.getenv("NVD_API_KEY", _cfg.get("nvd", {}).get("api_key", ""))
-    NVD_FETCH_ON_STARTUP: bool = _cfg.get("nvd", {}).get("fetch_on_startup", True)
-
-    # Attack patterns file
-    PATTERNS_PATH: str = os.getenv("PATTERNS_PATH", "/app/config/attack_patterns.json")
-    WHITELIST_PATH: str = os.getenv("WHITELIST_PATH", "/app/config/whitelist.txt")
-
-    # Data paths
-    DATA_DIR: str = "/app/data"
-    DB_PATH: str = "/app/data/db/cyber_defense.db"
-    MODELS_DIR: str = "/app/data/models"
-    LOGS_DIR: str = "/app/data/logs"
+@dataclass
+class MonitoringConfig:
+    nginx_log_path: str = os.getenv(
+        "NGINX_LOG_PATH",
+        str(BASE_DIR / "data" / "logs" / "access.log")
+    )
+    poll_interval: float = 0.5
+    metrics_interval: int = 30
 
 
-settings = Settings()
+@dataclass
+class ScanningConfig:
+    target_host: str = os.getenv("SCAN_TARGET", "testapp")
+    target_port: int = 5000
+    scan_interval_hours: int = 24
+
+
+@dataclass
+class NvdConfig:
+    api_url: str = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+    api_key: str = os.getenv("NVD_API_KEY", "")
+    fetch_on_startup: bool = True
+    max_results: int = 500
+
+
+@dataclass
+class ServerConfig:
+    host: str = os.getenv("HOST", "0.0.0.0")
+    port: int = int(os.getenv("PORT", "8000"))
+    log_level: str = os.getenv("LOG_LEVEL", "info")
+    cors_origins: List[str] = field(default_factory=lambda: ["*"])
+
+
+@dataclass
+class AppConfig:
+    database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    ollama: OllamaConfig = field(default_factory=OllamaConfig)
+    qdrant: QdrantConfig = field(default_factory=QdrantConfig)
+    detection: DetectionConfig = field(default_factory=DetectionConfig)
+    defense: DefenseConfig = field(default_factory=DefenseConfig)
+    monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
+    scanning: ScanningConfig = field(default_factory=ScanningConfig)
+    nvd: NvdConfig = field(default_factory=NvdConfig)
+    server: ServerConfig = field(default_factory=ServerConfig)
+    debug: bool = os.getenv("DEBUG", "false").lower() == "true"
+
+    # Convenience path properties
+    data_dir: str = "/app/data"
+    db_path: str = "/app/data/db/cyber_defense.db"
+    models_dir: str = "/app/data/models"
+    logs_dir: str = "/app/data/logs"
+    patterns_path: str = os.getenv("PATTERNS_PATH", "/app/config/attack_patterns.json")
+    whitelist_path: str = os.getenv("WHITELIST_PATH", "/app/config/whitelist.txt")
+
+
+# Singleton config
+settings = AppConfig()

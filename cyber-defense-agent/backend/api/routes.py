@@ -1,150 +1,244 @@
+"""
+FastAPI route definitions for the Cyber Defense Agent backend.
+"""
+
 import asyncio
 import logging
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, HTTPException
+from datetime import datetime
+from typing import Any, Dict, List
+
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-from backend.api.models import BlockIPRequest, UnblockIPRequest, DefenseModeRequest, SimulateRequest
+
+from backend.api.models import (
+    AttackResponse,
+    BlockedIPResponse,
+    BlockIPRequest,
+    DefenseModeRequest,
+    HealthResponse,
+    StatsResponse,
+    UnblockIPRequest,
+    WhitelistRequest,
+)
+from backend.monitoring.storage import LogStorage, DefenseStorage
+from backend.monitoring.metrics_collector import MetricsCollector
 
 logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
+# These are injected from main.py
+_log_storage: LogStorage = None
+_defense_storage: DefenseStorage = None
+_defense_engine = None
+_analyzer = None
+_metrics_collector = MetricsCollector()
+
 # WebSocket connection manager
-_ws_clients: list = []
+_ws_connections: List[WebSocket] = []
 
 
-@router.get("/health")
-async def health(request: Request):
-    storage = request.app.state.storage
-    ollama_ok = False
+def init_routes(log_storage, defense_storage, defense_engine, analyzer):
+    global _log_storage, _defense_storage, _defense_engine, _analyzer
+    _log_storage = log_storage
+    _defense_storage = defense_storage
+    _defense_engine = defense_engine
+    _analyzer = analyzer
+
+
+# ------------------------------------------------------------------
+# Health
+# ------------------------------------------------------------------
+
+@router.get("/health", response_model=HealthResponse, tags=["health"])
+async def health_check():
+    ollama_status = "unknown"
+    if _analyzer:
+        health = _analyzer.check_ollama_health()
+        ollama_status = "ready" if health.get("available") else "unavailable"
+
+    db_status = "connected"
     try:
-        import aiohttp
-        async with aiohttp.ClientSession() as s:
-            async with s.get(f"{request.app.state.llm_analyzer.base_url}/api/tags", timeout=aiohttp.ClientTimeout(total=3)) as r:
-                ollama_ok = r.status == 200
+        if _log_storage:
+            _log_storage.get_recent_attacks(limit=1)
     except Exception:
-        pass
+        db_status = "error"
 
     return {
         "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
         "services": {
-            "database": "connected",
-            "ollama": "ready" if ollama_ok else "unavailable",
-            "defense_engine": "active" if not request.app.state.defense_engine.dry_run else "dry-run",
+            "database": db_status,
+            "ollama": ollama_status,
+            "defense_engine": "active" if _defense_engine else "unavailable",
+        },
+        "defense_mode": {
+            "auto_block": _defense_engine._auto_block if _defense_engine else False,
+            "dry_run": _defense_engine._dry_run if _defense_engine else True,
         },
     }
 
 
-@router.get("/api/attacks/recent")
-async def get_recent_attacks(request: Request, limit: int = 50):
-    attacks = await request.app.state.storage.get_recent_attacks(limit=limit)
+# ------------------------------------------------------------------
+# Attacks
+# ------------------------------------------------------------------
+
+@router.get("/api/attacks/recent", tags=["attacks"])
+async def get_recent_attacks(limit: int = Query(default=20, ge=1, le=200)):
+    if not _log_storage:
+        raise HTTPException(503, "Storage not initialised")
+    attacks = _log_storage.get_recent_attacks(limit=limit)
     return {"attacks": attacks, "total": len(attacks)}
 
 
-@router.get("/api/defense/blocked-ips")
-async def get_blocked_ips(request: Request):
-    blocked = await request.app.state.storage.get_blocked_ips()
-    return {"blocked_ips": blocked, "total": len(blocked)}
+@router.get("/api/stats/attacks", response_model=StatsResponse, tags=["stats"])
+async def get_attack_stats(days: int = Query(default=7, ge=1, le=90)):
+    if not _log_storage:
+        raise HTTPException(503, "Storage not initialised")
+    return _log_storage.get_attack_stats(days=days)
 
 
-@router.post("/api/defense/block-ip")
-async def block_ip(request: Request, body: BlockIPRequest):
-    result = await request.app.state.defense_engine.block_ip_manual(
-        ip=body.ip, reason=body.reason, duration=body.duration
-    )
+# ------------------------------------------------------------------
+# Defense
+# ------------------------------------------------------------------
+
+@router.get("/api/defense/blocked-ips", tags=["defense"])
+async def get_blocked_ips():
+    if not _defense_storage:
+        raise HTTPException(503, "Storage not initialised")
+    ips = _defense_storage.get_blocked_ips()
+    return {"blocked_ips": ips, "total": len(ips)}
+
+
+@router.post("/api/defense/block-ip", tags=["defense"])
+async def block_ip(req: BlockIPRequest):
+    if not _defense_engine:
+        raise HTTPException(503, "Defense engine not initialised")
+    result = _defense_engine.manual_block(req.ip, req.reason, req.duration)
     if not result["success"]:
-        raise HTTPException(status_code=400, detail=result.get("message", "Block failed"))
-    return result
-
-
-@router.post("/api/defense/unblock-ip")
-async def unblock_ip(request: Request, body: UnblockIPRequest):
-    result = await request.app.state.defense_engine.unblock_ip(body.ip, performed_by="MANUAL")
-    return result
-
-
-@router.post("/api/defense/emergency-unblock")
-async def emergency_unblock(request: Request):
-    result = await request.app.state.defense_engine.emergency_unblock_all()
-    return result
-
-
-@router.post("/api/defense/mode")
-async def set_defense_mode(request: Request, body: DefenseModeRequest):
-    engine = request.app.state.defense_engine
-    if body.auto_defense is not None:
-        await engine.toggle_auto_defense(body.auto_defense)
-    if body.dry_run is not None:
-        await engine.toggle_dry_run(body.dry_run)
+        raise HTTPException(500, "IP block operation failed")
     return {
-        "auto_defense": engine.auto_block,
-        "dry_run": engine.dry_run,
+        "success": True,
+        "message": f"IP {req.ip} blocked successfully",
+        "unblock_time": result.get("unblock_at"),
     }
 
 
-@router.get("/api/stats/attacks")
-async def get_attack_stats(request: Request, days: int = 7):
-    return await request.app.state.storage.get_attack_stats(days=days)
+@router.post("/api/defense/unblock-ip", tags=["defense"])
+async def unblock_ip(req: UnblockIPRequest):
+    if not _defense_engine:
+        raise HTTPException(503, "Defense engine not initialised")
+    result = _defense_engine.manual_unblock(req.ip)
+    return {
+        "success": result["success"],
+        "message": f"IP {req.ip} unblocked",
+    }
 
 
-@router.get("/api/scan/latest")
-async def get_latest_scan(request: Request):
-    result = await request.app.state.storage.get_latest_scan()
-    return result or {"message": "No scans yet"}
+@router.post("/api/defense/emergency-unblock", tags=["defense"])
+async def emergency_unblock():
+    if not _defense_engine:
+        raise HTTPException(503, "Defense engine not initialised")
+    result = _defense_engine.emergency_unblock_all()
+    return result
 
 
-@router.post("/api/scan/run")
-async def run_scan(request: Request):
-    from backend.scanning.vulnerability_scanner import VulnerabilityScanner
-    scanner = VulnerabilityScanner(storage=request.app.state.storage)
-    asyncio.create_task(scanner.run_scan())
-    return {"message": "Vulnerability scan started in background"}
+@router.post("/api/defense/mode", tags=["defense"])
+async def set_defense_mode(req: DefenseModeRequest):
+    if not _defense_engine:
+        raise HTTPException(503, "Defense engine not initialised")
+    if req.auto_block is not None:
+        _defense_engine.set_auto_block(req.auto_block)
+    if req.dry_run is not None:
+        _defense_engine.set_dry_run(req.dry_run)
+    return {
+        "auto_block": _defense_engine._auto_block,
+        "dry_run": _defense_engine._dry_run,
+    }
 
 
-@router.post("/api/simulate")
-async def simulate_attack(request: Request, body: SimulateRequest):
-    from backend.scanning.attack_simulator import AttackSimulator
-    sim = AttackSimulator()
-    attack_type = body.attack_type.lower()
+# ------------------------------------------------------------------
+# Whitelist
+# ------------------------------------------------------------------
 
-    async def run():
-        if attack_type == "all":
-            return await sim.run_all()
-        elif attack_type == "sql_injection":
-            return await sim.simulate_sql_injection()
-        elif attack_type == "xss":
-            return await sim.simulate_xss()
-        elif attack_type == "path_traversal":
-            return await sim.simulate_path_traversal()
-        elif attack_type == "brute_force":
-            return await sim.simulate_brute_force()
-        else:
-            return {"error": f"Unknown attack type: {attack_type}"}
+@router.get("/api/whitelist", tags=["whitelist"])
+async def get_whitelist():
+    if not _defense_engine:
+        raise HTTPException(503, "Defense engine not initialised")
+    return {"whitelist": _defense_engine.whitelist.list_all()}
 
-    asyncio.create_task(run())
-    return {"message": f"Attack simulation '{attack_type}' started"}
 
+@router.post("/api/whitelist/add", tags=["whitelist"])
+async def add_to_whitelist(req: WhitelistRequest):
+    if not _defense_engine:
+        raise HTTPException(503, "Defense engine not initialised")
+    _defense_engine.whitelist.add(req.ip, req.reason)
+    return {"success": True, "message": f"IP {req.ip} added to whitelist"}
+
+
+@router.post("/api/whitelist/remove", tags=["whitelist"])
+async def remove_from_whitelist(req: WhitelistRequest):
+    if not _defense_engine:
+        raise HTTPException(503, "Defense engine not initialised")
+    _defense_engine.whitelist.remove(req.ip)
+    return {"success": True, "message": f"IP {req.ip} removed from whitelist"}
+
+
+# ------------------------------------------------------------------
+# Metrics
+# ------------------------------------------------------------------
+
+@router.get("/api/metrics/system", tags=["metrics"])
+async def system_metrics():
+    return _metrics_collector.get_metrics()
+
+
+# ------------------------------------------------------------------
+# LLM / Analysis
+# ------------------------------------------------------------------
+
+@router.post("/api/analysis/analyze", tags=["analysis"])
+async def analyze_attack(attack_data: Dict[str, Any], request_data: Dict[str, Any] = None):
+    if not _analyzer:
+        raise HTTPException(503, "LLM analyzer not initialised")
+    result = _analyzer.analyze_attack(attack_data, request_data or {})
+    return result
+
+
+@router.get("/api/analysis/ollama-health", tags=["analysis"])
+async def ollama_health():
+    if not _analyzer:
+        raise HTTPException(503, "LLM analyzer not initialised")
+    return _analyzer.check_ollama_health()
+
+
+# ------------------------------------------------------------------
+# WebSocket live feed
+# ------------------------------------------------------------------
 
 @router.websocket("/ws/attacks")
-async def ws_attacks(websocket: WebSocket):
+async def websocket_attacks(websocket: WebSocket):
     await websocket.accept()
-    _ws_clients.append(websocket)
+    _ws_connections.append(websocket)
     try:
         while True:
+            # Keep-alive ping every 30 s
             await asyncio.sleep(30)
             await websocket.send_json({"type": "ping"})
     except WebSocketDisconnect:
-        _ws_clients.remove(websocket)
+        _ws_connections.remove(websocket)
     except Exception:
-        if websocket in _ws_clients:
-            _ws_clients.remove(websocket)
+        if websocket in _ws_connections:
+            _ws_connections.remove(websocket)
 
 
-async def broadcast_attack(attack: dict):
-    """Called from monitoring pipeline to push live events to dashboard."""
+async def broadcast_attack(attack: Dict):
+    """Broadcast a new attack event to all connected WebSocket clients."""
     dead = []
-    for ws in _ws_clients:
+    for ws in list(_ws_connections):
         try:
             await ws.send_json({"type": "new_attack", "data": attack})
         except Exception:
             dead.append(ws)
     for ws in dead:
-        _ws_clients.remove(ws)
+        _ws_connections.remove(ws)
