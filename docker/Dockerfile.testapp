@@ -1,0 +1,20 @@
+FROM python:3.11-slim
+
+LABEL description="Deliberately vulnerable Flask test application"
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir flask==3.0.0
+
+COPY test_app/ ./test_app/
+
+# Initialise the test database
+RUN python -c "
+import sys, os
+sys.path.insert(0, '/app')
+os.makedirs('/app/test_app', exist_ok=True)
+"
+
+EXPOSE 5000
+
+CMD ["python", "test_app/vulnerable_app.py"]

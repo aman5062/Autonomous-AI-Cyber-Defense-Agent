@@ -1,0 +1,42 @@
+monitoring:
+  nginx_log_path: "/var/log/nginx/access.log"
+  poll_interval: 0.5
+  metrics_interval: 30
+
+detection:
+  brute_force_threshold: 5
+  brute_force_window: 60
+  sql_confidence_threshold: 0.7
+
+defense:
+  enable_auto_block: true
+  dry_run_mode: false
+  whitelist:
+    - "127.0.0.1"
+    - "::1"
+  ban_durations:
+    SQL_INJECTION: 86400
+    BRUTE_FORCE: 3600
+    PATH_TRAVERSAL: 86400
+    XSS: 21600
+    COMMAND_INJECTION: 86400
+    PORT_SCAN: 172800
+    DDOS: 86400
+    DEFAULT: 3600
+
+ollama:
+  api_url: "http://ollama:11434"
+  model: "llama3.2:3b"
+  temperature: 0.3
+  max_tokens: 1000
+  timeout: 60
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  log_level: "info"
+  cors_origins:
+    - "*"
+
+database:
+  url: "sqlite:////app/data/db/cyber_defense.db"
