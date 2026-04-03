@@ -1,0 +1,110 @@
+services:
+
+  # ── Backend API ──────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: cyber_defense_backend
+    privileged: true
+    volumes:
+      - ./data:/app/data
+      - nginx_logs:/var/log/nginx
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
+      - DATABASE_URL=sqlite:////app/data/db/cyber_defense.db
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - QDRANT_HOST=qdrant
+      - SCAN_TARGET=testapp
+    depends_on:
+      - ollama
+      - qdrant
+    networks:
+      - cyber_net
+    restart: unless-stopped
+
+  # ── Streamlit Dashboard ──────────────────────────────────────────────────────
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dashboard
+    container_name: cyber_defense_dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      - backend
+    networks:
+      - cyber_net
+    restart: unless-stopped
+
+  # ── Ollama LLM ───────────────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: cyber_defense_ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks:
+      - cyber_net
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ollama serve &
+        sleep 10
+        ollama pull llama3.2:3b
+        wait
+
+  # ── Qdrant Vector DB ─────────────────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: cyber_defense_qdrant
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "6333:6333"
+    networks:
+      - cyber_net
+    restart: unless-stopped
+
+  # ── Vulnerable Test App ──────────────────────────────────────────────────────
+  testapp:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.testapp
+    container_name: cyber_defense_testapp
+    ports:
+      - "5000:5000"
+    networks:
+      - cyber_net
+    restart: unless-stopped
+
+  # ── NGINX ────────────────────────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: cyber_defense_nginx
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginx_logs:/var/log/nginx
+    ports:
+      - "80:80"
+    depends_on:
+      - testapp
+    networks:
+      - cyber_net
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+  qdrant_data:
+  nginx_logs:
+
+networks:
+  cyber_net:
+    driver: bridge

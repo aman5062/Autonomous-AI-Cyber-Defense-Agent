@@ -1,0 +1,30 @@
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y \
+    iptables \
+    sudo \
+    curl \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -u 1000 appuser && \
+    echo "appuser ALL=(ALL) NOPASSWD: /sbin/iptables, /usr/sbin/iptables" >> /etc/sudoers
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir --prefer-binary -r requirements.txt
+
+COPY backend/ ./backend/
+COPY config/ ./config/
+
+RUN mkdir -p /app/data/logs /app/data/db /app/data/models && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
+EXPOSE 8000
+
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
