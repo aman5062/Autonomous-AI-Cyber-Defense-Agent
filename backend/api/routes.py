@@ -116,7 +116,7 @@ async def block_ip(req: BlockIPRequest):
         raise HTTPException(503, "Defense engine not initialised")
     result = _defense_engine.manual_block(req.ip, req.reason, req.duration)
     if not result["success"]:
-        raise HTTPException(500, f"Block failed: {result}")
+        raise HTTPException(500, "IP block operation failed")
     return {
         "success": True,
         "message": f"IP {req.ip} blocked successfully",

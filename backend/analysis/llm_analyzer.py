@@ -160,7 +160,7 @@ class LLMAnalyzer:
                 "model_ready": any(self._model in m for m in models),
             }
         except Exception as exc:
-            return {"available": False, "error": str(exc)}
+            return {"available": False, "error": "Ollama service unavailable"}
 
     # ------------------------------------------------------------------
     # Internal helpers

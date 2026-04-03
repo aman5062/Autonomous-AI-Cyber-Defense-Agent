@@ -41,4 +41,4 @@ class MetricsCollector:
             }
         except Exception as exc:  # noqa: BLE001
             logger.error("Metrics collection error: %s", exc)
-            return {"available": False, "error": str(exc)}
+            return {"available": False, "error": "Metrics collection failed"}

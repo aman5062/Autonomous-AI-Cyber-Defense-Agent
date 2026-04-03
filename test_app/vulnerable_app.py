@@ -1,6 +1,14 @@
 """
 Deliberately vulnerable Flask application for testing the defense system.
+
 WARNING: This app is intentionally insecure. Never expose to the internet.
+
+CodeQL/SAST alerts in this file are EXPECTED and intentional:
+  - SQL injection (test_app/vulnerable_app.py) – tests the defense system
+  - Path injection (test_app/vulnerable_app.py) – tests path traversal detection
+  - Command injection (test_app/vulnerable_app.py) – tests command injection detection
+  - Flask debug mode (test_app/vulnerable_app.py) – local testing only
+All vulnerabilities are here so that the Cyber Defense Agent has real attacks to detect.
 """
 
 import os
