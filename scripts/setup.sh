@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Setup script for Autonomous AI Cyber Defense Agent
-set -euo pipefail
+set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -36,22 +36,24 @@ echo "✅ Created data directories"
 echo ""
 echo "Building Docker containers (this may take a few minutes)..."
 cd "$PROJECT_DIR"
-docker compose -f docker/docker-compose.yml up --build -d
+docker compose up --build -d
 
 echo ""
 echo "============================================"
 echo "  Services Starting...                      "
 echo "============================================"
 echo ""
-echo "  🖥️  Dashboard:   http://localhost:8501"
-echo "  🔌  Backend API: http://localhost:8000"
-echo "  🎯  Test App:    http://localhost:5000"
-echo "  📊  API Docs:    http://localhost:8000/docs"
+echo "  🖥️  Dashboard:     http://localhost:8501"
+echo "  🔌  Backend API:   http://localhost:8000"
+echo "  🎯  Test App:      http://localhost:5000"
+echo "  📊  API Docs:      http://localhost:8000/docs"
+echo "  🔍  Qdrant UI:     http://localhost:6333/dashboard"
+echo "  🌐  NGINX Proxy:   http://localhost:80"
 echo ""
-echo "Wait 30 seconds for all services to start, then open the dashboard."
-echo ""
-echo "To pull the Ollama model (required for AI analysis):"
-echo "  docker exec cyber_defense_ollama ollama pull llama3.2:3b"
+echo "Wait 60 seconds for all services to start (Ollama model pull takes time)."
 echo ""
 echo "To view logs:"
-echo "  docker compose -f docker/docker-compose.yml logs -f backend"
+echo "  docker compose logs -f backend"
+echo ""
+echo "To generate demo attacks:"
+echo "  bash scripts/demo_attacks.sh"

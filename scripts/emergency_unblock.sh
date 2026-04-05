@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Emergency: unblock all IPs
-set -euo pipefail
+set -eu
 
 echo "⚠️  Emergency unblock all blocked IPs..."
 BACKEND="${BACKEND_URL:-http://localhost:8000}"

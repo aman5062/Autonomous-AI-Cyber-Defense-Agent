@@ -5,7 +5,7 @@ Whitelist manager – tracks IPs that should never be blocked.
 import ipaddress
 import logging
 from pathlib import Path
-from typing import Set
+from typing import Set, List
 
 from backend.config import settings, BASE_DIR
 
@@ -16,25 +16,38 @@ _WHITELIST_FILE = BASE_DIR / "config" / "whitelist.txt"
 # Always-safe addresses
 _ALWAYS_SAFE = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
 
+# Always-safe networks (Docker internal ranges)
+_ALWAYS_SAFE_NETWORKS = [
+    ipaddress.ip_network("172.16.0.0/12"),   # Docker default bridge range
+    ipaddress.ip_network("192.168.0.0/16"),  # Private class C
+    ipaddress.ip_network("10.0.0.0/8"),      # Private class A
+]
+
 
 class WhitelistManager:
-    """In-memory + file-backed IP whitelist."""
+    """In-memory + file-backed IP whitelist with CIDR support."""
 
     def __init__(self):
         self._whitelist: Set[str] = set(_ALWAYS_SAFE)
+        self._networks: List[ipaddress.IPv4Network] = list(_ALWAYS_SAFE_NETWORKS)
         self._whitelist.update(settings.defense.whitelist)
         self._load_from_file()
 
     def is_whitelisted(self, ip: str) -> bool:
         if ip in self._whitelist:
             return True
-        # Only block truly loopback / link-local (NOT general private ranges —
-        # private IPs are valid attacker sources in internal networks)
         try:
             addr = ipaddress.ip_address(ip)
-            return addr.is_loopback or addr.is_link_local
+            # Always allow loopback and link-local
+            if addr.is_loopback or addr.is_link_local:
+                return True
+            # Check CIDR networks
+            for net in self._networks:
+                if addr in net:
+                    return True
         except ValueError:
-            return False
+            pass
+        return False
 
     def add(self, ip: str, reason: str = ""):
         self._whitelist.add(ip)
@@ -52,8 +65,16 @@ class WhitelistManager:
         if _WHITELIST_FILE.exists():
             for line in _WHITELIST_FILE.read_text().splitlines():
                 line = line.strip()
-                if line and not line.startswith("#"):
-                    self._whitelist.add(line)
+                if not line or line.startswith("#"):
+                    continue
+                # Try CIDR network
+                if "/" in line:
+                    try:
+                        self._networks.append(ipaddress.ip_network(line, strict=False))
+                        continue
+                    except ValueError:
+                        pass
+                self._whitelist.add(line)
 
     def _persist(self):
         try:

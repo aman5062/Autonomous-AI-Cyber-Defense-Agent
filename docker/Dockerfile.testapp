@@ -1,19 +1,15 @@
 FROM python:3.11-slim
 
-LABEL description="Deliberately vulnerable Flask test application"
-
 WORKDIR /app
 
-RUN pip install --no-cache-dir flask==3.0.0
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir flask>=3.0.0
 
 COPY test_app/ ./test_app/
 
-# Initialise the test database
-RUN python -c "
-import sys, os
-sys.path.insert(0, '/app')
-os.makedirs('/app/test_app', exist_ok=True)
-"
+# Initialize DB at build time using the Docker path
+ENV TEST_DB_PATH=/app/test_app/test.db
+RUN python test_app/init_db.py
 
 EXPOSE 5000
 

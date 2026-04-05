@@ -2,6 +2,10 @@
 Streamlit dashboard – Autonomous AI Cyber Defense Agent
 """
 
+import sys
+import os
+sys.path.insert(0, "/app")  # ensure dashboard package is importable
+
 import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional

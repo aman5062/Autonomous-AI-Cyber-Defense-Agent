@@ -1,34 +1,48 @@
-*.pyc
+# Python
 __pycache__/
+*.py[cod]
 *.pyo
-.env
-.venv/
-venv/
-env/
+*.pyd
+.Python
 *.egg-info/
 dist/
 build/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+!.env.example
+
+# Data (runtime)
+data/logs/*.log
+data/db/*.db
+data/models/*.pkl
+data/models/*.joblib
+
+# Keep directory structure
+!data/logs/.gitkeep
+!data/db/.gitkeep
+!data/models/.gitkeep
+
+# Test artifacts
 .pytest_cache/
 .coverage
 htmlcov/
-*.log
+*.xml
 
-# Data (generated at runtime)
-data/db/
-data/models/
-data/logs/*.log
-test_app/test.db
-
-# Editor
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 
+# Docker
+.dockerignore
+
 # OS
 .DS_Store
 Thumbs.db
-
-# Docker volumes
-ollama_data/
-nginx_logs/

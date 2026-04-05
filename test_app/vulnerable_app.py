@@ -19,7 +19,7 @@ from flask import Flask, request, render_template_string, redirect, url_for, ses
 app = Flask(__name__)
 app.secret_key = "super-insecure-secret-key-for-testing"
 
-DB_PATH = Path(__file__).parent / "test.db"
+DB_PATH = Path(os.getenv("TEST_DB_PATH", str(Path(__file__).parent / "test.db")))
 
 # ------------------------------------------------------------------
 # HTML templates (inline for simplicity)
@@ -170,6 +170,11 @@ def init_db():
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Add role column if it doesn't exist (handles old DBs)
+        try:
+            db.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         db.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES ('admin', 'secret123', 'admin')")
         db.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES ('user1', 'password', 'user')")
         db.commit()

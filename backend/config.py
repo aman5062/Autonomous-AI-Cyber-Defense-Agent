@@ -30,11 +30,18 @@ class DatabaseConfig:
 
 @dataclass
 class OllamaConfig:
-    api_url: str = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
+    api_url: str = os.getenv("OLLAMA_API_URL", os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
     model: str = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
     temperature: float = 0.3
     max_tokens: int = 1000
-    timeout: int = 60
+    timeout: int = 120
+
+
+@dataclass
+class QdrantConfig:
+    host: str = os.getenv("QDRANT_HOST", "qdrant")
+    port: int = 6333
+    collection_name: str = "threat_intelligence"
 
 
 @dataclass
@@ -42,6 +49,8 @@ class DetectionConfig:
     brute_force_threshold: int = int(os.getenv("BRUTE_FORCE_THRESHOLD", "5"))
     brute_force_window: int = int(os.getenv("BRUTE_FORCE_WINDOW", "60"))
     sql_confidence_threshold: float = 0.7
+    ddos_threshold: int = 100
+    ddos_window: int = 10
     enable_anomaly_detection: bool = False
 
 
@@ -76,6 +85,21 @@ class MonitoringConfig:
 
 
 @dataclass
+class ScanningConfig:
+    target_host: str = os.getenv("SCAN_TARGET", "testapp")
+    target_port: int = 5000
+    scan_interval_hours: int = 24
+
+
+@dataclass
+class NvdConfig:
+    api_url: str = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+    api_key: str = os.getenv("NVD_API_KEY", "")
+    fetch_on_startup: bool = True
+    max_results: int = 500
+
+
+@dataclass
 class ServerConfig:
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = int(os.getenv("PORT", "8000"))
@@ -87,11 +111,38 @@ class ServerConfig:
 class AppConfig:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     ollama: OllamaConfig = field(default_factory=OllamaConfig)
+    qdrant: QdrantConfig = field(default_factory=QdrantConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     defense: DefenseConfig = field(default_factory=DefenseConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
+    scanning: ScanningConfig = field(default_factory=ScanningConfig)
+    nvd: NvdConfig = field(default_factory=NvdConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
+
+    # Convenience path properties
+    data_dir: str = "/app/data"
+    db_path: str = "/app/data/db/cyber_defense.db"
+    models_dir: str = "/app/data/models"
+    logs_dir: str = "/app/data/logs"
+    patterns_path: str = os.getenv("PATTERNS_PATH", "/app/config/attack_patterns.json")
+    whitelist_path: str = os.getenv("WHITELIST_PATH", "/app/config/whitelist.txt")
+
+    # Shorthand accessors used by intelligence/scanning modules
+    @property
+    def NVD_API_URL(self): return self.nvd.api_url
+    @property
+    def NVD_API_KEY(self): return self.nvd.api_key
+    @property
+    def QDRANT_HOST(self): return self.qdrant.host
+    @property
+    def QDRANT_PORT(self): return self.qdrant.port
+    @property
+    def QDRANT_COLLECTION(self): return self.qdrant.collection_name
+    @property
+    def SCAN_TARGET_HOST(self): return self.scanning.target_host
+    @property
+    def SCAN_TARGET_PORT(self): return self.scanning.target_port
 
 
 # Singleton config

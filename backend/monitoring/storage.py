@@ -14,7 +14,14 @@ from backend.config import settings
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(settings.database.url.replace("sqlite:///", ""))
+# Handle both sqlite:/// (relative) and sqlite://// (absolute) URL formats
+_db_url = settings.database.url
+if _db_url.startswith("sqlite:////"):
+    DB_PATH = Path(_db_url[len("sqlite:///"):])   # keeps leading /
+elif _db_url.startswith("sqlite:///"):
+    DB_PATH = Path(_db_url[len("sqlite:///"):])
+else:
+    DB_PATH = Path("/app/data/db/cyber_defense.db")
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 SCHEMA_SQL = """
@@ -96,6 +103,15 @@ CREATE TABLE IF NOT EXISTS app_config (
     key TEXT PRIMARY KEY,
     value TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS scan_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    target TEXT,
+    open_ports TEXT,
+    vulnerabilities TEXT,
+    raw TEXT
 );
 
 INSERT OR IGNORE INTO app_config (key, value) VALUES
@@ -310,6 +326,26 @@ class DefenseStorage:
                 "INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)",
                 (key, value),
             )
+
+    async def save_scan_result(self, target: str, open_ports: list,
+                                vulnerabilities: list, raw: str = ""):
+        sql = """
+            INSERT INTO scan_results (target, open_ports, vulnerabilities, raw)
+            VALUES (?, ?, ?, ?)
+        """
+        with get_connection() as conn:
+            conn.execute(sql, (
+                target,
+                json.dumps(open_ports),
+                json.dumps(vulnerabilities),
+                raw,
+            ))
+
+    def get_scan_results(self, limit: int = 10) -> list:
+        sql = "SELECT * FROM scan_results ORDER BY scan_time DESC LIMIT ?"
+        with get_connection() as conn:
+            rows = conn.execute(sql, (limit,)).fetchall()
+        return [_row_to_dict(r) for r in rows]
 
 
 def _row_to_dict(row: sqlite3.Row) -> Dict:

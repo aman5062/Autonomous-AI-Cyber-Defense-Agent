@@ -1,6 +1,13 @@
-# Auto-generated whitelist
-0.0.0.0
+# Whitelisted IPs - these will NEVER be blocked
+# Add one IP per line
 127.0.0.1
-192.0.2.1
 ::1
-localhost
+# Docker internal network IPs (gateway + all container IPs)
+172.17.0.1
+172.18.0.1
+172.19.0.1
+172.20.0.1
+172.21.0.1
+# Docker container subnet
+172.17.0.0
+172.18.0.0

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Generate demo attack traffic against the vulnerable test app
-set -euo pipefail
+set -eu
 
 TARGET="${1:-http://localhost:5000}"
 echo "Sending demo attacks to $TARGET"
