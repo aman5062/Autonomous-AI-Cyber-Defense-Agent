@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Shield — Management Console</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-dim: #8b949e;
+      --primary: #238636;
+      --primary-hover: #2ea043;
+      --accent: #1f6feb;
+      --danger: #da3633;
+      --warning: #d29922;
+      --safe: #3fb950;
+      --critical: #f85149;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+    }
+
+    /* Sidebar */
+    aside {
+      width: 260px;
+      background-color: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      padding: 24px 0;
+    }
+
+    .brand {
+      padding: 0 24px 32px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 20px;
+      font-weight: 700;
+    }
+
+    .brand span { color: var(--safe); }
+
+    nav { flex: 1; }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 24px;
+      color: var(--text-dim);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .nav-item:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+    .nav-item.active {
+      color: var(--text);
+      background: rgba(31, 111, 235, 0.1);
+      border-left: 3px solid var(--accent);
+    }
+
+    /* Main Content */
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    header {
+      padding: 24px 40px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    header h1 { font-size: 24px; font-weight: 600; }
+
+    .content-area { padding: 40px; }
+
+    /* Grid Layouts */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 24px;
+      margin-bottom: 40px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+    }
+
+    .stat-label { color: var(--text-dim); font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat-value { font-size: 32px; font-weight: 700; margin-top: 8px; }
+
+    /* Tables */
+    .table-container {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+    }
+
+    th {
+      background: rgba(255,255,255,0.02);
+      padding: 16px 24px;
+      font-size: 13px;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+    }
+
+    td {
+      padding: 16px 24px;
+      font-size: 14px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    tr:last-child td { border-bottom: none; }
+    tr:hover { background: rgba(255,255,255,0.01); }
+
+    .risk-pill {
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .pill-SAFE { background: rgba(63, 185, 80, 0.15); color: #56d364; }
+    .pill-LOW { background: rgba(210, 153, 34, 0.15); color: #e3b341; }
+    .pill-MEDIUM { background: rgba(210, 153, 34, 0.15); color: #e3b341; }
+    .pill-HIGH { background: rgba(248, 81, 73, 0.15); color: #f85149; }
+    .pill-CRITICAL { background: #f85149; color: #fff; }
+
+    /* Buttons */
+    .btn {
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      transition: all 0.2s;
+    }
+
+    .btn-primary { background: var(--primary); border-color: var(--primary); color: white; }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-danger { background: transparent; border-color: var(--danger); color: var(--danger); }
+    .btn-danger:hover { background: var(--danger); color: white; }
+
+    /* Utils */
+    .hidden { display: none; }
+    .flex-center { display: flex; align-items: center; gap: 8px; }
+
+    /* Custom Modal */
+    #cs-modal-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:99999; display:none; align-items:center; justify-content:center; }
+    #cs-modal { width:320px; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; box-shadow:0 8px 32px rgba(0,0,0,0.5); text-align:center; }
+    #cs-modal-title { font-weight:700; font-size:16px; margin-bottom:12px; }
+    #cs-modal-msg { color:var(--text-dim); font-size:14px; margin-bottom:24px; line-height:1.5; }
+    .modal-btns { display:flex; gap:12px; }
+    .modal-btn { flex:1; padding:10px; border-radius:6px; cursor:pointer; font-weight:600; font-size:14px; border:1px solid var(--border); transition:all 0.2s; }
+    .modal-btn-cancel { background:transparent; color:var(--text); }
+    .modal-btn-confirm { background:var(--danger); color:white; border-color:var(--danger); }
+    .modal-btn-cancel:hover { background:rgba(255,255,255,0.05); }
+    .modal-btn-confirm:hover { opacity: 0.9; }
+  </style>
+</head>
+<body>
+
+  <div id="cs-modal-overlay">
+    <div id="cs-modal">
+      <div id="cs-modal-title">Confirm Action</div>
+      <div id="cs-modal-msg">Are you sure?</div>
+      <div class="modal-btns">
+        <button class="modal-btn modal-btn-cancel" id="btn-modal-cancel">Cancel</button>
+        <button class="modal-btn modal-btn-confirm" id="btn-modal-confirm">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+
+  <aside>
+    <div class="brand">
+      🛡️ <span>AI</span> Shield
+    </div>
+    <nav>
+      <div class="nav-item active" data-view="overview">
+        📊 Overview
+      </div>
+      <div class="nav-item" data-view="history">
+        🕒 Scan History
+      </div>
+      <div class="nav-item" data-view="blocked">
+        🚫 Blocked List
+      </div>
+      <div class="nav-item" data-view="settings">
+        ⚙️ Settings
+      </div>
+    </nav>
+    <div style="padding: 24px;">
+      <a href="#" id="export-data" class="nav-item" style="padding: 12px 0;">📦 Export History</a>
+    </div>
+  </aside>
+
+  <main>
+    <header>
+      <h1 id="view-title">Shield Overview</h1>
+      <div class="header-actions">
+        <button id="btn-refresh" class="btn">🔄 Refresh Data</button>
+      </div>
+    </header>
+
+    <div class="content-area">
+      
+      <!-- Overview View -->
+      <section id="view-overview">
+        <div class="stats-grid">
+          <div class="card">
+            <div class="stat-label">Total Sites Scanned</div>
+            <div class="stat-value" id="stat-scans">0</div>
+          </div>
+          <div class="card">
+            <div class="stat-label">Threats Blocked</div>
+            <div class="stat-value" id="stat-blocked" style="color: var(--critical)">0</div>
+          </div>
+          <div class="card">
+            <div class="stat-label">Average Safety Score</div>
+            <div class="stat-value" id="stat-score" style="color: var(--safe)">0%</div>
+          </div>
+        </div>
+
+        <h2 style="margin-bottom: 20px;">Recent Activity</h2>
+        <div class="table-container">
+          <table id="recent-table">
+            <thead>
+              <tr>
+                <th>Domain</th>
+                <th>Risk Level</th>
+                <th>Score</th>
+                <th>Issues</th>
+                <th>Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Data shows here -->
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- History View -->
+      <section id="view-history" class="hidden">
+        <div class="table-container">
+          <table id="history-table">
+            <thead>
+              <tr>
+                <th>Domain</th>
+                <th>Risk Level</th>
+                <th>Score</th>
+                <th>Detected Threats</th>
+                <th>Time Scanned</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Blocked View -->
+      <section id="view-blocked" class="hidden">
+        <div class="table-container">
+          <table id="blocked-table">
+            <thead>
+              <tr>
+                <th>Domain</th>
+                <th>Reason</th>
+                <th>Block Level</th>
+                <th>Blocked At</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Settings View -->
+      <section id="view-settings" class="hidden">
+        <div class="card">
+          <h3>Data Management</h3>
+          <p style="color: var(--text-dim); margin-top: 8px; font-size: 14px;">Wipe all locally stored history and statistics.</p>
+          <button id="btn-wipe" class="btn btn-danger" style="margin-top: 20px;">Wipe All Data</button>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>

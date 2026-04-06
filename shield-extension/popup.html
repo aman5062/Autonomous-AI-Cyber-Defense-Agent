@@ -67,6 +67,7 @@ body { width:380px; min-height:500px; background:#0d1117; color:#e6edf3; font-fa
 .btn-scan:hover { background:#1d4ed8; }
 .btn-ghost   { background:#161b22; border-color:#30363d; color:#8b949e; }
 .btn-ghost:hover { color:#e6edf3; border-color:#8b949e; }
+#btn-dashboard:hover { background: rgba(255,255,255,0.1); }
 .btn-danger  { background:#7f1d1d44; border-color:#dc262644; color:#fca5a5; }
 
 .actions { padding:10px 16px 14px; }
@@ -91,9 +92,33 @@ body { width:380px; min-height:500px; background:#0d1117; color:#e6edf3; font-fa
 .history-domain { font-family:monospace; font-size:12px; }
 .history-meta { font-size:10px; color:#8b949e; margin-top:1px; display:flex; gap:8px; }
 .risk-pill { font-size:10px; font-weight:700; padding:1px 6px; border-radius:10px; }
+
+/* Custom Modal */
+#cs-modal-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:99999; display:none; align-items:center; justify-content:center; }
+#cs-modal { width:280px; background:#161b22; border:1px solid #30363d; border-radius:12px; padding:20px; box-shadow:0 8px 32px rgba(0,0,0,0.5); text-align:center; }
+#cs-modal-title { font-weight:700; font-size:14px; margin-bottom:8px; }
+#cs-modal-msg { color:#8b949e; font-size:12px; margin-bottom:20px; line-height:1.4; }
+.modal-btns { display:flex; gap:8px; }
+.modal-btn { flex:1; padding:8px; border-radius:6px; cursor:pointer; font-weight:600; font-size:12px; border:1px solid #30363d; transition:all 0.2s; }
+.modal-btn-cancel { background:transparent; color:#e6edf3; }
+.modal-btn-confirm { background:#da3633; color:white; border-color:#da3633; }
+.modal-btn-cancel:hover { background:rgba(255,255,255,0.05); }
+.modal-btn-confirm:hover { background:#f85149; }
 </style>
 </head>
 <body>
+
+<div id="cs-modal-overlay">
+  <div id="cs-modal">
+    <div id="cs-modal-title">Confirm Action</div>
+    <div id="cs-modal-msg">Are you sure you want to proceed?</div>
+    <div class="modal-btns">
+      <button class="modal-btn modal-btn-cancel" id="btn-modal-cancel">Cancel</button>
+      <button class="modal-btn modal-btn-confirm" id="btn-modal-confirm">Proceed</button>
+    </div>
+  </div>
+</div>
+
 
 <div class="header">
   <span class="header-icon">🛡️</span>
@@ -101,12 +126,16 @@ body { width:380px; min-height:500px; background:#0d1117; color:#e6edf3; font-fa
     <div class="header-title">AI Cyber Defense Shield</div>
     <div class="header-sub">Standalone — no backend required</div>
   </div>
-  <div class="header-right" id="https-badge"></div>
+  <div class="header-right" style="display: flex; gap: 8px; align-items: center;">
+    <div id="https-badge"></div>
+    <button id="btn-dashboard" style="background: none; border: none; cursor: pointer; font-size: 16px; padding: 4px; border-radius: 4px; transition: background 0.2s;" title="Manage Console">📊</button>
+  </div>
 </div>
 
 <div class="risk-banner" id="risk-banner">
-  <div class="scanning"><div class="spinner"></div><div>Scanning...</div></div>
+  <div class="scanning"><div class="spinner"></div><div>Initializing scan...</div></div>
 </div>
+
 
 <div class="tabs">
   <div class="tab active" data-tab="issues">Issues</div>
@@ -141,6 +170,7 @@ body { width:380px; min-height:500px; background:#0d1117; color:#e6edf3; font-fa
 <div class="actions" id="actions">
   <button class="btn btn-scan" id="btn-rescan">🔄 Re-scan Page</button>
 </div>
+
 
 <script src="popup.js"></script>
 </body>

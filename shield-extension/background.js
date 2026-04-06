@@ -50,22 +50,44 @@ async function updateStats(riskLevel, threatsFound) {
   await chrome.storage.local.set({ stats })
 }
 
-// ── Declarative Net Request — block sites ─────────────────────────────────────
+// ── Declarative Net Request — block sites & strip referrers ──────────────────
 async function syncDNR(blockedList) {
   try {
     const existing = await chrome.declarativeNetRequest.getDynamicRules()
     const removeIds = existing.map(r => r.id)
-    const addRules = blockedList.map((site, i) => ({
-      id: i + 1,
-      priority: 1,
-      action: { type: 'block' },
-      condition: { urlFilter: `||${site.domain}^`, resourceTypes: ['main_frame', 'sub_frame'] },
-    }))
+    
+    const addRules = []
+    
+    blockedList.forEach((site, i) => {
+      // Rule 1: BLOCK the site
+      addRules.push({
+        id: (i * 2) + 1,
+        priority: 1,
+        action: { type: 'block' },
+        condition: { urlFilter: `||${site.domain}^`, resourceTypes: ['main_frame', 'sub_frame'] },
+      })
+      
+      // Rule 2: STRIP REFERRER when visiting this site (privacy layer)
+      addRules.push({
+        id: (i * 2) + 2,
+        priority: 1,
+        action: {
+          type: 'modifyHeaders',
+          requestHeaders: [{ header: 'referer', operation: 'remove' }]
+        },
+        condition: { 
+          urlFilter: `||${site.domain}^`, 
+          resourceTypes: ['main_frame', 'sub_frame', 'stylesheet', 'script', 'image', 'font', 'object', 'xmlhttprequest', 'ping', 'csp_report', 'media', 'websocket', 'other'] 
+        },
+      })
+    })
+
     await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: removeIds, addRules })
   } catch (e) {
     console.warn('DNR update failed:', e)
   }
 }
+
 
 // ── Core scan logic ───────────────────────────────────────────────────────────
 async function performScan(url) {
@@ -75,6 +97,12 @@ async function performScan(url) {
   const domain = parsedUrl.hostname
   const isHTTPS = parsedUrl.protocol === 'https:'
   const isLocal = ['localhost', '127.0.0.1', '::1'].includes(domain)
+  
+  // Skip system pages
+  if (parsedUrl.protocol.includes('chrome') || parsedUrl.protocol.includes('edge') || domain === 'newtab' || url === 'about:blank') {
+    return { url, domain, isHTTPS: true, riskLevel: 'SAFE', score: 100, issues: [], checkedAt: new Date().toISOString() }
+  }
+
   const issues = []
 
   // 1. No HTTPS
@@ -183,16 +211,7 @@ async function scanSite(url, tabId) {
   await updateStats(result.riskLevel, result.issues.length)
   updateBadge(tabId, result.riskLevel)
 
-  // Notification for HIGH/CRITICAL
-  if (['CRITICAL', 'HIGH'].includes(result.riskLevel)) {
-    chrome.notifications.create(`scan-${Date.now()}`, {
-      type: 'basic',
-      iconUrl: 'icons/shield48.png',
-      title: `⚠️ ${result.riskLevel} Risk Detected`,
-      message: `${new URL(url).hostname}\n${result.issues[0]?.desc || ''}`,
-      priority: result.riskLevel === 'CRITICAL' ? 2 : 1,
-    })
-  }
+  // Notifications disabled as requested.
 
   // Auto-block CRITICAL phishing
   if (result.riskLevel === 'CRITICAL') {
@@ -261,7 +280,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await chrome.storage.local.set({ scanHistory: [], stats: { totalScans: 0, totalBlocked: 0, totalThreats: 0, byRisk: {} } })
         sendResponse({ success: true })
         break
+      case 'LOG_ISSUE': {
+        const history = await getScanHistory()
+        const h = history.find(entry => entry.domain === sender.tab.url.split('/')[2])
+        if (h) {
+          h.issues.push(msg.data)
+          // Update score
+          const sevScore = { CRITICAL: 40, HIGH: 25, MEDIUM: 10, LOW: 5 }
+          const deduction = h.issues.reduce((s, i) => s + (sevScore[i.severity] || 0), 0)
+          h.score = Math.max(0, 100 - deduction)
+          h.riskLevel = h.score >= 80 ? 'SAFE' : h.score >= 60 ? 'LOW' : h.score >= 40 ? 'MEDIUM' : h.score >= 20 ? 'HIGH' : 'CRITICAL'
+          await chrome.storage.local.set({ scanHistory: history })
+          updateBadge(sender.tab.id, h.riskLevel)
+        }
+        sendResponse({ success: true })
+        break
+      }
       case 'CONTENT_SCAN':
+
         await addScanResult({ ...msg.data, domain: msg.domain })
         await updateStats(msg.data.riskLevel, msg.data.issues?.length || 0)
         const [t] = await chrome.tabs.query({ active: true, currentWindow: true })

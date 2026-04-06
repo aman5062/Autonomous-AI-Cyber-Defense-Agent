@@ -6,6 +6,10 @@
   const domain = window.location.hostname
   const isHTTPS = window.location.protocol === 'https:'
   const isLocal = ['localhost', '127.0.0.1', '::1'].includes(domain)
+
+  // Skip system pages
+  if (window.location.protocol.includes('chrome') || window.location.protocol.includes('edge') || domain === 'newtab' || window.location.href === 'about:blank') return
+
   const issues = []
 
   // ── Inject styles ─────────────────────────────────────────────────────────
@@ -21,23 +25,23 @@
       transition: transform 0.35s cubic-bezier(0.34,1.56,0.64,1), opacity 0.3s ease;
     }
     #cs-popup.show { transform: translateX(0); opacity: 1; }
-    #cs-popup.hide { transform: translateX(400px); opacity: 0; }
-    .cs-bar { height: 4px; }
-    .cs-head { display:flex; align-items:center; gap:10px; padding:12px 14px 10px; border-bottom:1px solid #30363d; }
-    .cs-head-title { font-weight:700; font-size:13px; flex:1; }
-    .cs-close { background:none; border:none; color:#8b949e; cursor:pointer; font-size:16px; padding:2px 6px; border-radius:4px; }
+    #cs-popup.hide { transform: translateX(350px); opacity: 0; }
+    .cs-bar { height: 3px; }
+    .cs-head { display:flex; align-items:center; gap:8px; padding:10px 12px 8px; border-bottom:1px solid #30363d; }
+    .cs-head-title { font-weight:700; font-size:12px; flex:1; }
+    .cs-close { background:none; border:none; color:#8b949e; cursor:pointer; font-size:14px; padding:2px 4px; border-radius:4px; }
     .cs-close:hover { background:#30363d; color:#e6edf3; }
-    .cs-risk { display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:1px solid #30363d; }
-    .cs-risk-icon { font-size:26px; }
-    .cs-risk-label { font-size:10px; color:#8b949e; text-transform:uppercase; letter-spacing:.05em; }
-    .cs-risk-val { font-size:17px; font-weight:800; margin-top:1px; }
-    .cs-risk-domain { font-size:11px; color:#8b949e; font-family:monospace; margin-top:1px; }
-    .cs-https { display:inline-flex; align-items:center; gap:3px; font-size:11px; font-weight:600; padding:2px 7px; border-radius:10px; margin-top:3px; }
+    .cs-risk { display:flex; align-items:center; gap:10px; padding:10px 12px; border-bottom:1px solid #30363d; }
+    .cs-risk-icon { font-size:22px; }
+    .cs-risk-label { font-size:9px; color:#8b949e; text-transform:uppercase; letter-spacing:.05em; }
+    .cs-risk-val { font-size:15px; font-weight:800; margin-top:1px; }
+    .cs-risk-domain { font-size:10px; color:#8b949e; font-family:monospace; margin-top:1px; }
+    .cs-https { display:inline-flex; align-items:center; gap:3px; font-size:10px; font-weight:600; padding:1px 6px; border-radius:8px; margin-top:3px; }
     .cs-https-ok  { background:#14532d44; color:#22c55e; border:1px solid #16a34a44; }
     .cs-https-bad { background:#7f1d1d44; color:#ef4444; border:1px solid #dc262644; }
     .cs-score { text-align:center; margin-left:auto; }
-    .cs-score-num { font-size:24px; font-weight:800; }
-    .cs-score-sub { font-size:10px; color:#8b949e; }
+    .cs-score-num { font-size:20px; font-weight:800; }
+    .cs-score-sub { font-size:9px; color:#8b949e; }
     .cs-issues { padding:10px 14px; max-height:200px; overflow-y:auto; }
     .cs-issues::-webkit-scrollbar { width:4px; }
     .cs-issues::-webkit-scrollbar-thumb { background:#30363d; border-radius:2px; }
@@ -157,6 +161,48 @@
         rec: 'Leave immediately — this site is mining crypto using your CPU' })
     }
   })
+
+  // 9. Tabnabbing Protection
+  let tabnabbCount = 0
+  document.querySelectorAll('a[target="_blank"]').forEach(el => {
+    if (!el.rel || !el.rel.includes('noopener')) {
+      el.rel = (el.rel ? el.rel + ' ' : '') + 'noopener noreferrer'
+      tabnabbCount++
+    }
+  })
+  if (tabnabbCount > 0) {
+    issues.push({ type: 'TABNABBING', severity: 'LOW',
+      desc: `Secured ${tabnabbCount} vulnerable external link(s)`,
+      rec: 'Shield added noopener/noreferrer to prevent tabnabbing attacks' })
+  }
+
+  // 10. Favicon Phishing
+  const iconLink = document.querySelector('link[rel*="icon"]')?.href || ''
+  if (iconLink) {
+    const brands = ['paypal', 'google', 'amazon', 'microsoft', 'apple', 'facebook', 'netflix']
+    const iconName = iconLink.toLowerCase()
+    const brandMatch = brands.find(b => iconName.includes(b) && !domain.includes(b))
+    if (brandMatch) {
+      issues.push({ type: 'FAVICON_PHISH', severity: 'HIGH',
+        desc: `Brand icon mismatch: "${brandMatch}" icon on "${domain}"`,
+        rec: 'This site is using an official brand icon but is on a different domain' })
+    }
+  }
+
+  // 11. Dark Patterns (Fake Countdowns)
+  let fakeTimers = 0
+  const timerWords = ['minute', 'second', 'hurry', 'limited', 'stock', 'left']
+  document.querySelectorAll('div,span,p,b').forEach(el => {
+    const t = el.textContent || ''
+    if (timerWords.some(w => t.toLowerCase().includes(w)) && /\b\d{1,2}:\d{2}\b|\b\d{1,2} [ms/i]/.test(t)) {
+      fakeTimers++
+    }
+  })
+  if (fakeTimers > 0) {
+    issues.push({ type: 'DARK_PATTERN', severity: 'LOW',
+      desc: 'Possible fake urgency/countdown detected',
+      rec: 'Be aware: sites often use fake timers to pressure you into buying' })
+  }
 
   // ── Risk score ────────────────────────────────────────────────────────────
   const sevScore = { CRITICAL: 40, HIGH: 25, MEDIUM: 10, LOW: 5 }
@@ -389,9 +435,21 @@
     document.body.appendChild(r)
   }
 
-  // Watch for dynamic content (SPAs)
+  // Watch for dynamic content (SPAs) and Form Hijacks
   new MutationObserver(mutations => {
     for (const m of mutations) {
+      if (m.type === 'attributes' && m.target.nodeName === 'FORM' && m.attributeName === 'action') {
+        const oldVal = m.oldValue
+        const newVal = m.target.action
+        if (oldVal && newVal && oldVal !== newVal) {
+          chrome.runtime.sendMessage({
+            type: 'LOG_ISSUE',
+            data: { type: 'FORM_HIJACK', severity: 'CRITICAL',
+              desc: `Detected dynamic form action change: ${oldVal} → ${newVal}`,
+              rec: 'The form destination was changed after loading — this is very suspicious' }
+          })
+        }
+      }
       m.addedNodes.forEach(node => {
         if (node.nodeType !== Node.ELEMENT_NODE) return
         node.querySelectorAll?.('a[href]').forEach(el => {
@@ -403,5 +461,5 @@
         })
       })
     }
-  }).observe(document.body, { childList: true, subtree: true })
+  }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeOldValue: true })
 })()

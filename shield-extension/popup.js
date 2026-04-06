@@ -39,25 +39,62 @@ async function init() {
   })
 
   // Scan current page
-  chrome.runtime.sendMessage({ type: 'SCAN_CURRENT' }, r => r?.result && renderResult(r.result))
+  const scanTimeout = setTimeout(() => {
+    document.getElementById('risk-banner').innerHTML = `<div class="empty">🛡️ Scan not available on this page</div>`
+    document.getElementById('issues-list').innerHTML = `<div class="empty">Browser system pages cannot be scanned for security.</div>`
+  }, 1500)
+
+  chrome.runtime.sendMessage({ type: 'SCAN_CURRENT' }, r => {
+    clearTimeout(scanTimeout)
+    if (r?.result) renderResult(r.result)
+  })
 
   // Rescan button
   document.getElementById('btn-rescan').onclick = () => {
     document.getElementById('risk-banner').innerHTML = `<div class="scanning"><div class="spinner"></div><div>Scanning...</div></div>`
     document.getElementById('issues-list').innerHTML = `<div class="empty">Scanning...</div>`
-    chrome.runtime.sendMessage({ type: 'SCAN_CURRENT' }, r => r?.result && renderResult(r.result))
+    const t = setTimeout(() => {
+      document.getElementById('risk-banner').innerHTML = `<div class="empty">Scan failed</div>`
+    }, 2000)
+    chrome.runtime.sendMessage({ type: 'SCAN_CURRENT' }, r => {
+      clearTimeout(t)
+      if (r?.result) renderResult(r.result)
+    })
   }
 
   // Clear history
   document.getElementById('btn-clear').onclick = () => {
-    if (confirm('Clear all scan history and stats?')) {
+    showModal('Clear History?', 'This will permanently delete all scan history and statistics.', () => {
       chrome.runtime.sendMessage({ type: 'CLEAR_HISTORY' }, () => {
         renderHistory(); renderStats()
-        alert('History cleared.')
       })
-    }
+    })
+  }
+
+  // Dashboard button
+  document.getElementById('btn-dashboard').onclick = () => {
+    chrome.tabs.create({ url: 'dashboard.html' })
   }
 }
+
+function showModal(title, msg, onConfirm) {
+  const overlay = document.getElementById('cs-modal-overlay')
+  const t = document.getElementById('cs-modal-title')
+  const m = document.getElementById('cs-modal-msg')
+  const btnCancel = document.getElementById('btn-modal-cancel')
+  const btnConfirm = document.getElementById('btn-modal-confirm')
+
+  t.textContent = title
+  m.textContent = msg
+  overlay.style.display = 'flex'
+
+  btnCancel.onclick = () => overlay.style.display = 'none'
+  btnConfirm.onclick = () => {
+    overlay.style.display = 'none'
+    onConfirm()
+  }
+}
+
 
 function renderResult(result) {
   const cfg = RISK[result.riskLevel] || RISK.UNKNOWN

@@ -40,5 +40,13 @@
       "enabled": true,
       "path": "rules.json"
     }]
-  }
+  },
+  "options_page": "dashboard.html",
+  "web_accessible_resources": [
+    {
+      "resources": ["dashboard.html", "dashboard.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }
+
