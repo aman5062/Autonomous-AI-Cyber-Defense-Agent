@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "AI Cyber Defense Shield",
+  "version": "2.0.0",
+  "description": "Standalone website security scanner — detects phishing, unsafe payments, malicious links and scam content. No backend required.",
+  "icons": {
+    "16":  "icons/shield16.png",
+    "48":  "icons/shield48.png",
+    "128": "icons/shield128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "storage",
+    "tabs",
+    "notifications",
+    "declarativeNetRequest"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/shield16.png",
+      "48": "icons/shield48.png"
+    },
+    "default_title": "AI Cyber Defense Shield"
+  },
+  "declarative_net_request": {
+    "rule_resources": [{
+      "id": "blocked_sites",
+      "enabled": true,
+      "path": "rules.json"
+    }]
+  }
+}

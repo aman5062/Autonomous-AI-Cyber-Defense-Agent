@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AI Cyber Defense Shield</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { width:380px; min-height:500px; background:#0d1117; color:#e6edf3; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:13px; }
+
+.header { background:#161b22; border-bottom:1px solid #30363d; padding:12px 16px; display:flex; align-items:center; gap:10px; }
+.header-icon { font-size:22px; }
+.header-title { font-weight:700; font-size:14px; }
+.header-sub { font-size:11px; color:#8b949e; margin-top:1px; }
+.header-right { margin-left:auto; }
+
+.risk-banner { padding:14px 16px; display:flex; align-items:center; gap:12px; border-bottom:1px solid #30363d; }
+.risk-icon { font-size:28px; }
+.risk-label { font-size:10px; color:#8b949e; text-transform:uppercase; letter-spacing:.05em; }
+.risk-value { font-size:20px; font-weight:800; margin-top:2px; }
+.risk-domain { font-size:11px; color:#8b949e; margin-top:2px; font-family:monospace; }
+.risk-score { margin-left:auto; text-align:center; }
+.risk-score-num { font-size:28px; font-weight:800; }
+.risk-score-label { font-size:10px; color:#8b949e; }
+.https-badge { display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:600; padding:2px 8px; border-radius:10px; margin-top:3px; }
+.https-ok  { background:#14532d44; color:#22c55e; border:1px solid #16a34a44; }
+.https-bad { background:#7f1d1d44; color:#ef4444; border:1px solid #dc262644; }
+
+.safe     { color:#22c55e; } .low    { color:#84cc16; }
+.medium   { color:#eab308; } .high   { color:#f97316; }
+.critical { color:#ef4444; } .unknown{ color:#6b7280; }
+.bg-safe     { background:#14532d22; border-color:#16a34a44; }
+.bg-low      { background:#36521422; border-color:#65a30d44; }
+.bg-medium   { background:#71350022; border-color:#ca8a0444; }
+.bg-high     { background:#7c2d1222; border-color:#ea580c44; }
+.bg-critical { background:#7f1d1d22; border-color:#dc262644; }
+
+.tabs { display:flex; border-bottom:1px solid #30363d; }
+.tab { flex:1; padding:8px; text-align:center; font-size:11px; cursor:pointer; color:#8b949e; border-bottom:2px solid transparent; transition:all .15s; }
+.tab.active { color:#e6edf3; border-bottom-color:#ef4444; }
+.tab:hover { color:#e6edf3; }
+.tab-content { display:none; }
+.tab-content.active { display:block; }
+
+.section { padding:10px 16px; border-bottom:1px solid #30363d; }
+.section-title { font-size:11px; color:#8b949e; text-transform:uppercase; letter-spacing:.05em; margin-bottom:8px; }
+.issue { display:flex; gap:8px; padding:7px 10px; border-radius:6px; border:1px solid; margin-bottom:5px; }
+.issue:last-child { margin-bottom:0; }
+.sev { font-size:10px; font-weight:700; padding:1px 6px; border-radius:3px; white-space:nowrap; align-self:flex-start; margin-top:1px; }
+.sev-critical { background:#7f1d1d; color:#fca5a5; }
+.sev-high     { background:#7c2d12; color:#fdba74; }
+.sev-medium   { background:#713500; color:#fde68a; }
+.sev-low      { background:#14532d; color:#86efac; }
+.iss-critical { background:#7f1d1d22; border-color:#dc262644; }
+.iss-high     { background:#7c2d1222; border-color:#ea580c44; }
+.iss-medium   { background:#71350022; border-color:#ca8a0444; }
+.iss-low      { background:#14532d22; border-color:#16a34a44; }
+.issue-desc { font-size:12px; color:#e6edf3; }
+.issue-rec  { font-size:11px; color:#8b949e; margin-top:2px; }
+
+.btn { width:100%; padding:9px; border-radius:6px; border:1px solid; font-size:12px; font-weight:600; cursor:pointer; transition:all .15s; display:flex; align-items:center; justify-content:center; gap:6px; margin-bottom:6px; }
+.btn:last-child { margin-bottom:0; }
+.btn-block   { background:#7f1d1d; border-color:#dc2626; color:#fca5a5; }
+.btn-block:hover { background:#991b1b; }
+.btn-unblock { background:#14532d; border-color:#16a34a; color:#86efac; }
+.btn-unblock:hover { background:#166534; }
+.btn-scan    { background:#1e3a5f; border-color:#2563eb; color:#93c5fd; }
+.btn-scan:hover { background:#1d4ed8; }
+.btn-ghost   { background:#161b22; border-color:#30363d; color:#8b949e; }
+.btn-ghost:hover { color:#e6edf3; border-color:#8b949e; }
+.btn-danger  { background:#7f1d1d44; border-color:#dc262644; color:#fca5a5; }
+
+.actions { padding:10px 16px 14px; }
+
+.blocked-item { display:flex; align-items:center; justify-content:space-between; padding:8px 16px; border-bottom:1px solid #30363d22; }
+.blocked-domain { font-family:monospace; font-size:12px; }
+.blocked-meta { font-size:10px; color:#8b949e; margin-top:1px; }
+.unblock-btn { font-size:11px; color:#60a5fa; cursor:pointer; background:none; border:none; padding:2px 6px; }
+.unblock-btn:hover { text-decoration:underline; }
+
+.stat-row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid #30363d22; font-size:12px; }
+.stat-row:last-child { border-bottom:none; }
+.stat-val { font-weight:700; }
+
+.empty { text-align:center; padding:20px; color:#8b949e; font-size:12px; }
+.scanning { text-align:center; padding:20px; color:#8b949e; }
+.spinner { display:inline-block; width:20px; height:20px; border:2px solid #30363d; border-top-color:#ef4444; border-radius:50%; animation:spin .8s linear infinite; margin-bottom:8px; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+.history-item { padding:8px 16px; border-bottom:1px solid #30363d22; cursor:pointer; }
+.history-item:hover { background:#ffffff08; }
+.history-domain { font-family:monospace; font-size:12px; }
+.history-meta { font-size:10px; color:#8b949e; margin-top:1px; display:flex; gap:8px; }
+.risk-pill { font-size:10px; font-weight:700; padding:1px 6px; border-radius:10px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <span class="header-icon">🛡️</span>
+  <div>
+    <div class="header-title">AI Cyber Defense Shield</div>
+    <div class="header-sub">Standalone — no backend required</div>
+  </div>
+  <div class="header-right" id="https-badge"></div>
+</div>
+
+<div class="risk-banner" id="risk-banner">
+  <div class="scanning"><div class="spinner"></div><div>Scanning...</div></div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="issues">Issues</div>
+  <div class="tab" data-tab="history">History</div>
+  <div class="tab" data-tab="blocked">Blocked</div>
+  <div class="tab" data-tab="stats">Stats</div>
+</div>
+
+<div class="tab-content active" id="tab-issues">
+  <div class="section" id="issues-list">
+    <div class="empty">Scanning current page...</div>
+  </div>
+</div>
+
+<div class="tab-content" id="tab-history">
+  <div id="history-list"><div class="empty">No scan history yet</div></div>
+</div>
+
+<div class="tab-content" id="tab-blocked">
+  <div id="blocked-list"><div class="empty">No sites blocked</div></div>
+</div>
+
+<div class="tab-content" id="tab-stats">
+  <div class="section" id="stats-content">
+    <div class="empty">Loading stats...</div>
+  </div>
+  <div class="section">
+    <button class="btn btn-danger" id="btn-clear">🗑️ Clear All History</button>
+  </div>
+</div>
+
+<div class="actions" id="actions">
+  <button class="btn btn-scan" id="btn-rescan">🔄 Re-scan Page</button>
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>
