@@ -49,10 +49,13 @@ class AttackDetectionEngine:
         user_agent = request_data.get("user_agent", "")
         body = request_data.get("body", "")
 
+        # Combine path + body so POST body injection is also detected
+        combined = f"{path} {body}".strip() if body else path
+
         detections: List[Dict] = []
 
-        # SQL Injection
-        result = self.sql_detector.detect(path, method)
+        # SQL Injection — check path AND body
+        result = self.sql_detector.detect(combined, method)
         if result["detected"]:
             result["ip"] = ip
             result["timestamp"] = datetime.utcnow().isoformat()
@@ -66,21 +69,21 @@ class AttackDetectionEngine:
             detections.append(result)
 
         # Path Traversal
-        result = self.path_traversal_detector.detect(path)
+        result = self.path_traversal_detector.detect(combined)
         if result["detected"]:
             result["ip"] = ip
             result["timestamp"] = datetime.utcnow().isoformat()
             detections.append(result)
 
         # XSS
-        result = self.xss_detector.detect(path, body)
+        result = self.xss_detector.detect(combined, body)
         if result["detected"]:
             result["ip"] = ip
             result["timestamp"] = datetime.utcnow().isoformat()
             detections.append(result)
 
-        # Command Injection
-        result = self.cmd_detector.detect(path)
+        # Command Injection — check path AND body
+        result = self.cmd_detector.detect(combined)
         if result["detected"]:
             result["ip"] = ip
             result["timestamp"] = datetime.utcnow().isoformat()

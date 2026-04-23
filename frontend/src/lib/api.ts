@@ -121,6 +121,18 @@ export const api = {
     post<{ injected: number; detected: number; attacks: Attack[] }>('/api/test/inject-custom', { lines }),
   runScan: () => post('/api/scan/run'),
 
+  // Demo
+  demoAttack: (attack_type: string, payload: string) =>
+    post<{ detected: boolean; attacker_ip: string; attack_type: string; detections: any[]; message: string }>(
+      '/api/demo/attack', { attack_type, payload }
+    ),
+  whoami: () => get<{ ip: string }>('/api/demo/whoami'),
+
+  // WiFi
+  wifiDevices: () => get<{ devices: any[]; total: number }>('/api/wifi/devices'),
+  wifiSummary: () => get<{ total_devices: number; blocked_devices: number; trusted_devices: number; risky_devices: number; local_ip: string; subnet: string; last_scan: string }>('/api/wifi/summary'),
+  wifiRescan: () => post<{ success: boolean }>('/api/wifi/rescan'),
+
   // Extension
   extensionScans: (limit = 50) => get<{ scans: ExtScan[]; total: number }>(`/api/extension/scans?limit=${limit}`),
   extensionStats: () => get<ExtStats>('/api/extension/stats'),

@@ -103,6 +103,12 @@ services:
       - NGINX_LOG_PATH=/var/log/nginx/access.log
       - ENABLE_AUTO_BLOCK=true
       - DRY_RUN_MODE=false
+      - ENABLE_EMAIL_REPORTS=${ENABLE_EMAIL_REPORTS:-false}
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - ALERT_EMAIL=${ALERT_EMAIL:-}
     depends_on:
       ollama:
         condition: service_healthy
@@ -143,8 +149,26 @@ services:
     container_name: cyber_defense_testapp
     ports:
       - "5000:5000"
+    environment:
+      - BACKEND_URL=http://backend:8000
     networks:
       - cyber_net
+    restart: unless-stopped
+
+  # ── WiFi Guard — Standalone Network Protection Service ────────────────────────
+  wifi-guard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.wifiGuard
+    container_name: cyber_defense_wifi_guard
+    # network_mode: host is required for LAN scanning on Linux.
+    # On macOS/Windows Docker Desktop the scan is limited to
+    # containers on the same Docker network.
+    network_mode: host
+    environment:
+      - BACKEND_URL=http://localhost:8000
+      - SCAN_INTERVAL=${SCAN_INTERVAL:-30}
+      - TRUSTED_DEVICES=${TRUSTED_DEVICES:-}
     restart: unless-stopped
 
   # ── Demo Dashboard ────────────────────────────────────────────────────────────
