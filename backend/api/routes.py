@@ -33,23 +33,19 @@ _defense_storage: DefenseStorage = None
 _defense_engine = None
 _analyzer = None
 _email_reporter = None
-_wifi_monitor = None
 _metrics_collector = MetricsCollector()
 
 # WebSocket connection manager
 _ws_connections: List[WebSocket] = []
 
 
-def init_routes(log_storage, defense_storage, defense_engine, analyzer,
-                email_reporter=None, wifi_monitor=None):
-    global _log_storage, _defense_storage, _defense_engine, _analyzer
-    global _email_reporter, _wifi_monitor
+def init_routes(log_storage, defense_storage, defense_engine, analyzer, email_reporter=None):
+    global _log_storage, _defense_storage, _defense_engine, _analyzer, _email_reporter
     _log_storage = log_storage
     _defense_storage = defense_storage
     _defense_engine = defense_engine
     _analyzer = analyzer
     _email_reporter = email_reporter
-    _wifi_monitor = wifi_monitor
 
 
 # ------------------------------------------------------------------
@@ -1274,56 +1270,6 @@ async def demo_page():
 async def whoami(request: Request):
     """Return the caller's real IP address (used by the demo page)."""
     return {"ip": _get_client_ip(request)}
-
-
-# ------------------------------------------------------------------
-# WiFi / Local Network Protection
-# ------------------------------------------------------------------
-
-@router.get("/api/wifi/devices", tags=["wifi"])
-async def get_wifi_devices():
-    """Return all devices discovered on the local network."""
-    if not _wifi_monitor:
-        return {"devices": [], "total": 0, "message": "WiFi monitor not initialised"}
-    devices = _wifi_monitor.get_devices()
-    # Sync blocked IPs into the monitor
-    if _defense_storage:
-        blocked = {row["ip"] for row in _defense_storage.get_blocked_ips()}
-        _wifi_monitor.update_blocked_ips(blocked)
-    return {"devices": devices, "total": len(devices)}
-
-
-@router.get("/api/wifi/summary", tags=["wifi"])
-async def get_wifi_summary():
-    """Return a summary of the local network state."""
-    if not _wifi_monitor:
-        return {
-            "total_devices": 0,
-            "blocked_devices": 0,
-            "trusted_devices": 0,
-            "risky_devices": 0,
-            "local_ip": "n/a",
-            "subnet": "n/a",
-            "last_scan": "n/a",
-        }
-    if _defense_storage:
-        blocked = {row["ip"] for row in _defense_storage.get_blocked_ips()}
-        _wifi_monitor.update_blocked_ips(blocked)
-    return _wifi_monitor.get_summary()
-
-
-@router.post("/api/wifi/rescan", tags=["wifi"])
-async def trigger_wifi_rescan():
-    """Trigger an immediate network rescan (runs in background)."""
-    if not _wifi_monitor:
-        raise HTTPException(503, "WiFi monitor not initialised")
-
-    async def _rescan():
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, _wifi_monitor._scan_network)
-
-    asyncio.create_task(_rescan())
-    return {"success": True, "message": "Network rescan triggered"}
 
 
 # ------------------------------------------------------------------

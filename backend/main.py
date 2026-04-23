@@ -19,7 +19,6 @@ from backend.defense.defense_engine import DefenseEngine
 from backend.analysis.llm_analyzer import LLMAnalyzer
 from backend.api.routes import router, init_routes, broadcast_attack
 from backend.analysis.email_reporter import EmailReporter
-from backend.monitoring.wifi_monitor import WiFiMonitor
 
 logging.basicConfig(
     level=getattr(logging, settings.server.log_level.upper(), logging.INFO),
@@ -34,7 +33,6 @@ _detection_engine: AttackDetectionEngine = None
 _defense_engine: DefenseEngine = None
 _analyzer: LLMAnalyzer = None
 _email_reporter: EmailReporter = None
-_wifi_monitor: WiFiMonitor = None
 _monitor_task: asyncio.Task = None
 
 
@@ -127,7 +125,7 @@ async def _run_email_report(attack_data: dict, request_data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _log_storage, _defense_storage, _detection_engine
-    global _defense_engine, _analyzer, _email_reporter, _wifi_monitor, _monitor_task
+    global _defense_engine, _analyzer, _email_reporter, _monitor_task
 
     logger.info("Starting Autonomous AI Cyber Defense Agent...")
     init_db()
@@ -138,11 +136,8 @@ async def lifespan(app: FastAPI):
     _defense_engine = DefenseEngine()
     _analyzer = LLMAnalyzer()
     _email_reporter = EmailReporter()
-    _wifi_monitor = WiFiMonitor()
-    _wifi_monitor.start()
 
-    init_routes(_log_storage, _defense_storage, _defense_engine, _analyzer,
-                _email_reporter, _wifi_monitor)
+    init_routes(_log_storage, _defense_storage, _defense_engine, _analyzer, _email_reporter)
     _monitor_task = asyncio.create_task(_monitor_loop())
 
     logger.info("Cyber Defense Agent running – dashboard at :8501, API at :8000")
@@ -155,8 +150,6 @@ async def lifespan(app: FastAPI):
             await _monitor_task
         except asyncio.CancelledError:
             pass
-    if _wifi_monitor:
-        _wifi_monitor.stop()
     if _defense_engine:
         _defense_engine.scheduler.shutdown()
 

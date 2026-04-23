@@ -102,15 +102,6 @@ class EmailConfig:
 
 
 @dataclass
-class WiFiConfig:
-    trusted_devices: List[str] = field(default_factory=lambda: [
-        d.strip() for d in os.getenv("TRUSTED_DEVICES", "").split(",") if d.strip()
-    ])
-    network_interface: str = os.getenv("NETWORK_INTERFACE", "")
-    scan_interval: int = 30  # seconds between network scans
-
-
-@dataclass
 class NvdConfig:
     api_url: str = "https://services.nvd.nist.gov/rest/json/cves/2.0"
     api_key: str = os.getenv("NVD_API_KEY", "")
@@ -138,7 +129,6 @@ class AppConfig:
     nvd: NvdConfig = field(default_factory=NvdConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     email: EmailConfig = field(default_factory=EmailConfig)
-    wifi: WiFiConfig = field(default_factory=WiFiConfig)
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
 
     # Convenience path properties
