@@ -18,6 +18,8 @@ from backend.detection.detection_engine import AttackDetectionEngine
 from backend.defense.defense_engine import DefenseEngine
 from backend.analysis.llm_analyzer import LLMAnalyzer
 from backend.api.routes import router, init_routes, broadcast_attack
+from backend.analysis.email_reporter import EmailReporter
+from backend.monitoring.wifi_monitor import WiFiMonitor
 
 logging.basicConfig(
     level=getattr(logging, settings.server.log_level.upper(), logging.INFO),
@@ -31,6 +33,8 @@ _defense_storage: DefenseStorage = None
 _detection_engine: AttackDetectionEngine = None
 _defense_engine: DefenseEngine = None
 _analyzer: LLMAnalyzer = None
+_email_reporter: EmailReporter = None
+_wifi_monitor: WiFiMonitor = None
 _monitor_task: asyncio.Task = None
 
 
@@ -76,6 +80,7 @@ async def _process_log_line(parser: NginxLogParser, line: str):
         _log_storage.mark_attack(request_id, attack_type, severity, blocked=True)
 
     asyncio.create_task(_run_llm_analysis(request_id, top, parsed))
+    asyncio.create_task(_run_email_report(top, parsed))
 
     attack_event = {
         "id": request_id,
@@ -105,10 +110,24 @@ async def _run_llm_analysis(request_id: int, attack_data: dict, request_data: di
         logger.warning("LLM analysis failed: %s", exc)
 
 
+async def _run_email_report(attack_data: dict, request_data: dict):
+    """Send email report asynchronously after attack detection."""
+    try:
+        loop = asyncio.get_event_loop()
+        analysis = await loop.run_in_executor(
+            None, _analyzer.analyze_attack, attack_data, request_data,
+        )
+        await loop.run_in_executor(
+            None, _email_reporter.send_attack_report, attack_data, request_data, analysis,
+        )
+    except Exception as exc:
+        logger.warning("Email report failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _log_storage, _defense_storage, _detection_engine
-    global _defense_engine, _analyzer, _monitor_task
+    global _defense_engine, _analyzer, _email_reporter, _wifi_monitor, _monitor_task
 
     logger.info("Starting Autonomous AI Cyber Defense Agent...")
     init_db()
@@ -118,8 +137,12 @@ async def lifespan(app: FastAPI):
     _detection_engine = AttackDetectionEngine()
     _defense_engine = DefenseEngine()
     _analyzer = LLMAnalyzer()
+    _email_reporter = EmailReporter()
+    _wifi_monitor = WiFiMonitor()
+    _wifi_monitor.start()
 
-    init_routes(_log_storage, _defense_storage, _defense_engine, _analyzer)
+    init_routes(_log_storage, _defense_storage, _defense_engine, _analyzer,
+                _email_reporter, _wifi_monitor)
     _monitor_task = asyncio.create_task(_monitor_loop())
 
     logger.info("Cyber Defense Agent running – dashboard at :8501, API at :8000")
@@ -132,6 +155,8 @@ async def lifespan(app: FastAPI):
             await _monitor_task
         except asyncio.CancelledError:
             pass
+    if _wifi_monitor:
+        _wifi_monitor.stop()
     if _defense_engine:
         _defense_engine.scheduler.shutdown()
 

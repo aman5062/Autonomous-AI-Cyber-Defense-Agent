@@ -92,6 +92,25 @@ class ScanningConfig:
 
 
 @dataclass
+class EmailConfig:
+    enabled: bool = os.getenv("ENABLE_EMAIL_REPORTS", "false").lower() == "true"
+    smtp_host: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user: str = os.getenv("SMTP_USER", "")
+    smtp_password: str = os.getenv("SMTP_PASSWORD", "")
+    alert_email: str = os.getenv("ALERT_EMAIL", "")
+
+
+@dataclass
+class WiFiConfig:
+    trusted_devices: List[str] = field(default_factory=lambda: [
+        d.strip() for d in os.getenv("TRUSTED_DEVICES", "").split(",") if d.strip()
+    ])
+    network_interface: str = os.getenv("NETWORK_INTERFACE", "")
+    scan_interval: int = 30  # seconds between network scans
+
+
+@dataclass
 class NvdConfig:
     api_url: str = "https://services.nvd.nist.gov/rest/json/cves/2.0"
     api_key: str = os.getenv("NVD_API_KEY", "")
@@ -118,6 +137,8 @@ class AppConfig:
     scanning: ScanningConfig = field(default_factory=ScanningConfig)
     nvd: NvdConfig = field(default_factory=NvdConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    email: EmailConfig = field(default_factory=EmailConfig)
+    wifi: WiFiConfig = field(default_factory=WiFiConfig)
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
 
     # Convenience path properties

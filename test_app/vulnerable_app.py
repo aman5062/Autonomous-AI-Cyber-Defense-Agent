@@ -13,13 +13,143 @@ All vulnerabilities are here so that the Cyber Defense Agent has real attacks to
 
 import os
 import sqlite3
+import threading
+import time
 from pathlib import Path
+
+import requests as _http
 from flask import Flask, request, render_template_string, redirect, url_for, session, g
 
 app = Flask(__name__)
 app.secret_key = "super-insecure-secret-key-for-testing"
 
 DB_PATH = Path(os.getenv("TEST_DB_PATH", str(Path(__file__).parent / "test.db")))
+_BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
+
+# ---------------------------------------------------------------------------
+# Blocked-IP cache — synced from the backend every 5 seconds
+# ---------------------------------------------------------------------------
+_blocked_ips: set = set()
+_blocked_lock = threading.Lock()
+
+
+def _sync_blocked_ips_loop():
+    global _blocked_ips
+    while True:
+        try:
+            r = _http.get(f"{_BACKEND_URL}/api/defense/blocked-ips", timeout=2)
+            if r.status_code == 200:
+                data = r.json()
+                ips = {item["ip"] for item in data.get("blocked_ips", [])}
+                with _blocked_lock:
+                    _blocked_ips = ips
+        except Exception:
+            pass
+        time.sleep(5)
+
+
+_sync_thread = threading.Thread(target=_sync_blocked_ips_loop, daemon=True)
+_sync_thread.start()
+
+
+def _report_to_backend(ip: str, method: str, path: str, body: str, ua: str):
+    """Fire-and-forget: report request to the backend detection pipeline."""
+    try:
+        _http.post(
+            f"{_BACKEND_URL}/api/demo/report",
+            json={"ip": ip, "method": method, "path": path, "body": body, "user_agent": ua},
+            timeout=1,
+        )
+    except Exception:
+        pass
+
+
+def _client_ip() -> str:
+    return (
+        request.headers.get("X-Real-IP")
+        or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        or request.remote_addr
+        or "127.0.0.1"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Before-request hook: block banned IPs and report all requests
+# ---------------------------------------------------------------------------
+
+BLOCKED_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+<title>🚫 Access Blocked — AI Cyber Defense</title>
+<style>
+body {
+  font-family: 'Segoe UI', sans-serif;
+  background: #0f172a;
+  color: #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  margin: 0;
+}
+.card {
+  background: #1e293b;
+  border: 2px solid #dc2626;
+  border-radius: 16px;
+  padding: 40px;
+  max-width: 480px;
+  text-align: center;
+  box-shadow: 0 0 40px rgba(220,38,38,0.3);
+}
+.icon { font-size: 4rem; margin-bottom: 16px; }
+h1 { color: #ef4444; font-size: 1.5rem; margin-bottom: 12px; }
+.ip { font-family: monospace; background: #0f172a; padding: 6px 14px;
+      border-radius: 6px; color: #f87171; font-size: 1.1rem; display: inline-block; margin: 8px 0; }
+p { color: #94a3b8; font-size: 0.9rem; line-height: 1.6; margin-top: 12px; }
+a { color: #7c3aed; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon">🛡️</div>
+  <h1>Access Blocked</h1>
+  <p>Your IP address has been blocked by the AI Cyber Defense Agent.</p>
+  <div class="ip">{{ ip }}</div>
+  <p>
+    Your request contained a malicious payload that was detected and blocked automatically.<br><br>
+    To restore access, contact your administrator or visit the
+    <a href="http://localhost:3000/blocked" target="_blank">Defense Dashboard</a>.
+  </p>
+</div>
+</body>
+</html>
+"""
+
+
+@app.before_request
+def enforce_block():
+    """Block IPs that are in the backend's blocked list."""
+    ip = _client_ip()
+    with _blocked_lock:
+        blocked = ip in _blocked_ips
+    if blocked:
+        return render_template_string(BLOCKED_HTML, ip=ip), 403
+
+    # Asynchronously report the request to the backend for detection
+    body = ""
+    if request.method in ("POST", "PUT", "PATCH"):
+        try:
+            body = request.get_data(as_text=True)[:2000]
+        except Exception:
+            pass
+    threading.Thread(
+        target=_report_to_backend,
+        args=(ip, request.method, request.full_path, body, request.user_agent.string),
+        daemon=True,
+    ).start()
+
+
 
 # ------------------------------------------------------------------
 # HTML templates (inline for simplicity)
@@ -49,6 +179,7 @@ nav a { margin-right: 15px; }
   <a href="/files">Files</a>
   <a href="/comments">Comments</a>
   <a href="/cmd">Command</a>
+  <a href="http://localhost:8000/demo" style="color:#dc2626;font-weight:bold;">🛡️ Live Demo</a>
 </nav>
 <hr>
 {% block content %}{% endblock %}

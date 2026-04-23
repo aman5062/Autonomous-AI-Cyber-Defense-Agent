@@ -103,6 +103,14 @@ services:
       - NGINX_LOG_PATH=/var/log/nginx/access.log
       - ENABLE_AUTO_BLOCK=true
       - DRY_RUN_MODE=false
+      - ENABLE_EMAIL_REPORTS=${ENABLE_EMAIL_REPORTS:-false}
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - ALERT_EMAIL=${ALERT_EMAIL:-}
+      - TRUSTED_DEVICES=${TRUSTED_DEVICES:-}
+      - NETWORK_INTERFACE=${NETWORK_INTERFACE:-}
     depends_on:
       ollama:
         condition: service_healthy

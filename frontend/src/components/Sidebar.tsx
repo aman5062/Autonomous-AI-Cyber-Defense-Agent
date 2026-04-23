@@ -11,6 +11,7 @@ const NAV = [
   { href: '/controls',   icon: '⚙️',  label: 'Controls' },
   { href: '/whitelist',  icon: '✅', label: 'Whitelist' },
   { href: '/launcher',   icon: '🚀', label: 'Attack Launcher' },
+  { href: '/wifi',       icon: '📡', label: 'WiFi Protection' },
   { href: '/guide',      icon: '📖', label: 'Attack Guide' },
   { href: '/extension',  icon: '🧩', label: 'Browser Extension' },
 ]
