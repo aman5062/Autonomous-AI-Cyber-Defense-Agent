@@ -14,10 +14,7 @@ RUN useradd -m -u 1000 appuser && \
 WORKDIR /app
 
 COPY requirements.txt .
-# BuildKit cache mount: pip download cache persists between builds on the host.
-# Packages are only re-downloaded when requirements.txt actually changes.
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --upgrade pip && \
+RUN pip install --upgrade pip && \
     pip install --prefer-binary -r requirements.txt
 
 COPY --chown=appuser:appuser backend/ ./backend/
