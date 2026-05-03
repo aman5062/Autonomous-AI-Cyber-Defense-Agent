@@ -193,7 +193,13 @@ class LogStorage:
         """
         with get_connection() as conn:
             rows = conn.execute(sql, (limit,)).fetchall()
-        return [_row_to_dict(r) for r in rows]
+        results = [_row_to_dict(r) for r in rows]
+        # Normalise timestamp to ISO 8601 for the frontend
+        for r in results:
+            ts = r.get("timestamp") or r.get("created_at")
+            if ts:
+                r["timestamp"] = _normalise_ts(ts)
+        return results
 
     def get_requests_by_ip(self, ip: str, hours: int = 24) -> List[Dict]:
         sql = """
@@ -346,6 +352,14 @@ class DefenseStorage:
         with get_connection() as conn:
             rows = conn.execute(sql, (limit,)).fetchall()
         return [_row_to_dict(r) for r in rows]
+
+
+def _normalise_ts(ts: str) -> str:
+    """Convert NGINX log timestamp to ISO 8601 for the frontend."""
+    try:
+        return datetime.strptime(ts, "%d/%b/%Y:%H:%M:%S %z").isoformat()
+    except (ValueError, TypeError):
+        return ts  # already ISO or unknown format — return as-is
 
 
 def _row_to_dict(row: sqlite3.Row) -> Dict:

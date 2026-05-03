@@ -18,6 +18,12 @@ docker compose up --build -d
 docker compose up --build -d backend frontend testapp
 ```
 
+**How rebuilds work (fast after first build):**
+- `requirements.txt` unchanged → pip packages come from local disk cache instantly
+- `requirements.txt` changed → only new/changed packages are downloaded
+- Source code changed → only the `COPY` layer re-runs, pip layer is reused
+- Use `DOCKER_BUILDKIT=1` (enabled by default on Docker Desktop) for cache mounts to work
+
 ---
 
 ## Services & Ports

@@ -16,11 +16,12 @@ _WHITELIST_FILE = BASE_DIR / "config" / "whitelist.txt"
 # Always-safe addresses
 _ALWAYS_SAFE = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
 
-# Always-safe networks (Docker internal ranges)
+# Always-safe networks — only Docker internals and loopback
+# NOTE: 192.168.x.x and 10.x.x.x are intentionally NOT whitelisted so that
+# devices on the local WiFi/LAN can be blocked by the demo and defense engine.
+# The Docker bridge range (172.16/12) is kept so the system never blocks itself.
 _ALWAYS_SAFE_NETWORKS = [
     ipaddress.ip_network("172.16.0.0/12"),   # Docker default bridge range
-    ipaddress.ip_network("192.168.0.0/16"),  # Private class C
-    ipaddress.ip_network("10.0.0.0/8"),      # Private class A
 ]
 
 

@@ -133,6 +133,36 @@ class EmailReporter:
             <pre style="background:#1f2937;color:#f9fafb;padding:12px;border-radius:6px;overflow-x:auto;">{code_fix['secure']}</pre>
             """
 
+        mitigation_section = (
+            f"""
+  <tr>
+    <td style="padding:0 24px 20px;">
+      <h2 style="color:#fff;font-size:16px;margin:0 0 12px;">🔧 Mitigation Steps</h2>
+      <div style="background:#0f172a;border-radius:8px;border:1px solid #334155;padding:16px;">
+        <ul style="margin:0;padding-left:20px;font-size:13px;line-height:1.8;color:#e2e8f0;">
+          {mitigation_html}
+        </ul>
+      </div>
+    </td>
+  </tr>"""
+            if mitigation_html
+            else ""
+        )
+
+        code_fix_section = (
+            f"""
+  <tr>
+    <td style="padding:0 24px 20px;">
+      <h2 style="color:#fff;font-size:16px;margin:0 0 12px;">💻 Code Fix</h2>
+      <div style="background:#0f172a;border-radius:8px;border:1px solid #334155;padding:16px;">
+        {code_fix_html}
+      </div>
+    </td>
+  </tr>"""
+            if code_fix_html
+            else ""
+        )
+
         html = f"""
 <!DOCTYPE html>
 <html>
@@ -215,30 +245,10 @@ class EmailReporter:
   </tr>
 
   <!-- Mitigation -->
-  {f"""
-  <tr>
-    <td style="padding:0 24px 20px;">
-      <h2 style="color:#fff;font-size:16px;margin:0 0 12px;">🔧 Mitigation Steps</h2>
-      <div style="background:#0f172a;border-radius:8px;border:1px solid #334155;padding:16px;">
-        <ul style="margin:0;padding-left:20px;font-size:13px;line-height:1.8;color:#e2e8f0;">
-          {mitigation_html}
-        </ul>
-      </div>
-    </td>
-  </tr>
-  """ if mitigation_html else ""}
+  {mitigation_section}
 
   <!-- Code Fix -->
-  {f"""
-  <tr>
-    <td style="padding:0 24px 20px;">
-      <h2 style="color:#fff;font-size:16px;margin:0 0 12px;">💻 Code Fix</h2>
-      <div style="background:#0f172a;border-radius:8px;border:1px solid #334155;padding:16px;">
-        {code_fix_html}
-      </div>
-    </td>
-  </tr>
-  """ if code_fix_html else ""}
+  {code_fix_section}
 
   <!-- Footer -->
   <tr>
